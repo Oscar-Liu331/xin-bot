@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <title>心快活 聊天推薦小幫手</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", sans-serif;
+    }
+
+    body {
+      background: #f3f4f6;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+
+    .chat-wrapper {
+      width: 100%;
+      max-width: 800px;
+      height: 80vh;
+      background: #ffffff;
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgba(15, 23, 42, 0.15);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .chat-header {
+      padding: 14px 18px;
+      border-bottom: 1px solid #e5e7eb;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: linear-gradient(135deg, #4f46e5, #7c3aed);
+      color: #ffffff;
+    }
+
+    .chat-header-title {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .chat-header-status {
+      font-size: 12px;
+      opacity: 0.9;
+    }
+
+    .chat-messages {
+      flex: 1;
+      padding: 16px;
+      overflow-y: auto;
+      background: #f9fafb;
+    }
+
+    .message-row {
+      display: flex;
+      margin-bottom: 10px;
+    }
+
+    .message-row.user {
+      justify-content: flex-end;
+    }
+
+    .message-row.bot {
+      justify-content: flex-start;
+    }
+
+    .avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 999px;
+      background: #e5e7eb;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      margin-right: 8px;
+      flex-shrink: 0;
+    }
+
+    .message-row.user .avatar {
+      margin-right: 0;
+      margin-left: 8px;
+      background: #4f46e5;
+      color: #ffffff;
+    }
+
+    .message-bubble {
+      max-width: 70%;
+      padding: 10px 12px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.5;
+      position: relative;
+      word-wrap: break-word;
+      white-space: pre-wrap; /* 保留換行 */
+    }
+
+    .message-row.bot .message-bubble {
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-top-left-radius: 4px;
+    }
+
+    .message-row.user .message-bubble {
+      background: #4f46e5;
+      color: #ffffff;
+      border: 1px solid #4338ca;
+      border-top-right-radius: 4px;
+    }
+
+    .message-meta {
+      font-size: 11px;
+      color: #9ca3af;
+      margin-top: 2px;
+    }
+
+    .message-row.user .message-meta {
+      text-align: right;
+    }
+
+    .chat-input-area {
+      padding: 10px 12px;
+      border-top: 1px solid #e5e7eb;
+      background: #ffffff;
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+    }
+
+    .chat-input-box {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .chat-input {
+      width: 100%;
+      min-height: 40px;
+      max-height: 120px;
+      resize: none;
+      border-radius: 10px;
+      border: 1px solid #d1d5db;
+      padding: 8px 10px;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .chat-input:focus {
+      border-color: #4f46e5;
+      box-shadow: 0 0 0 1px rgba(79, 70, 229, 0.2);
+    }
+
+    .chat-input-hint {
+      font-size: 11px;
+      color: #9ca3af;
+    }
+
+    .send-btn {
+      border: none;
+      outline: none;
+      cursor: pointer;
+      padding: 10px 16px;
+      border-radius: 999px;
+      font-size: 14px;
+      font-weight: 500;
+      background: #4f46e5;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: background 0.15s, transform 0.05s;
+      flex-shrink: 0;
+    }
+
+    .send-btn:active {
+      transform: scale(0.97);
+    }
+
+    .send-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    .send-btn-icon {
+      font-size: 14px;
+    }
+
+    @media (max-width: 600px) {
+      .chat-wrapper {
+        height: 90vh;
+        max-width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="chat-wrapper">
+    <div class="chat-header">
+      <div>
+        <div class="chat-header-title">心快活 課程推薦 & 心據點查詢</div>
+        <div class="chat-header-status">🟢 已連線 API /chat</div>
+      </div>
+    </div>
+
+    <div id="chatMessages" class="chat-messages">
+      <!-- 歷史訊息 / 新訊息都會塞在這 -->
+    </div>
+
+    <div class="chat-input-area">
+      <div class="chat-input-box">
+        <textarea
+          id="chatInput"
+          class="chat-input"
+          rows="1"
+          placeholder="輸入想問的問題，例如：小孩常常情緒失控怎麼辦？ 或 台南市東區大學路1號附近有沒有心據點？"
+        ></textarea>
+        <div class="chat-input-hint">Enter：送出　Shift+Enter：換行</div>
+      </div>
+      <button id="sendBtn" class="send-btn">
+        <span class="send-btn-icon">➤</span>
+        送出
+      </button>
+    </div>
+  </div>
+
+  <script>
+    const chatMessagesEl = document.getElementById('chatMessages');
+    const chatInputEl = document.getElementById('chatInput');
+    const sendBtnEl = document.getElementById('sendBtn');
+
+    // 如果 HTML 不是跟 API 同網域，這邊可以改成 'http://localhost:8000'
+    const API_BASE = '';
+
+    // 取得現在時間字串 HH:MM
+    function getTimeString() {
+      const d = new Date();
+      const hh = d.getHours().toString().padStart(2, '0');
+      const mm = d.getMinutes().toString().padStart(2, '0');
+      return `${hh}:${mm}`;
+    }
+
+    // 建立一則訊息 DOM
+    function appendMessage(role, text) {
+      const row = document.createElement('div');
+      row.classList.add('message-row', role);
+
+      const avatar = document.createElement('div');
+      avatar.classList.add('avatar');
+      avatar.textContent = role === 'user' ? '我' : '心';
+
+      const bubbleWrap = document.createElement('div');
+      const bubble = document.createElement('div');
+      bubble.classList.add('message-bubble');
+      bubble.textContent = text;
+
+      const meta = document.createElement('div');
+      meta.classList.add('message-meta');
+      meta.textContent = getTimeString();
+
+      bubbleWrap.appendChild(bubble);
+      bubbleWrap.appendChild(meta);
+
+      if (role === 'bot') {
+        row.appendChild(avatar);
+        row.appendChild(bubbleWrap);
+      } else {
+        row.appendChild(bubbleWrap);
+        row.appendChild(avatar);
+      }
+
+      chatMessagesEl.appendChild(row);
+
+      // 自動捲到底
+      chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+    }
+
+    // 把 API 回傳的 JSON 轉成聊天框裡的文字
+    function formatApiResponse(resp) {
+      if (!resp || typeof resp !== 'object') {
+        return '（系統沒有回傳可顯示的資訊）';
+      }
+
+      if (resp.type === 'xin_points') {
+        const addr = resp.address || '（未指定地址）';
+        const points = resp.points || [];
+        let lines = [];
+
+        if (points.length === 0) {
+          if (resp.message) {
+            lines.push(resp.message);
+          } else {
+            lines.push(`在「${addr}」附近目前找不到心據點。`);
+          }
+        } else {
+          lines.push(`在「${addr}」5 公里內找到這些心據點：`);
+          points.forEach((p, idx) => {
+            lines.push(`\n${idx + 1}. ${p.title || '(未命名據點)'}（約 ${p.distance_km} 公里）`);
+            if (p.address) {
+              lines.push(`   地址：${p.address}`);
+            }
+            if (p.tel) {
+              lines.push(`   電話：${p.tel}`);
+            }
+          });
+        }
+
+        return lines.join('\n');
+      }
+
+      if (resp.type === 'course_recommendation') {
+        const results = resp.results || [];
+        let lines = [];
+
+        if (results.length === 0) {
+          lines.push(resp.message || '目前找不到很符合的課程，可以換個關鍵字再試試。');
+        } else {
+          lines.push('根據你的敘述，我幫你找了這些課程 / 文章：');
+          results.forEach((item, idx) => {
+            const sec = item.section_title || '';
+            const title = item.title || '(無標題)';
+            lines.push(`\n${idx + 1}. ${sec ? '【' + sec + '】' : ''}${title}`);
+
+            if (item.type === 'video') {
+              if (item.youtube_url) {
+                lines.push(`   影片連結：${item.youtube_url}`);
+              }
+              if (item.hint) {
+                lines.push(`   小提醒：${item.hint}`);
+              }
+            } else if (item.type === 'article') {
+              if (item.article_url) {
+                lines.push(`   文章連結：${item.article_url}`);
+              }
+              if (item.snippet) {
+                lines.push(`   節錄：${item.snippet}`);
+              }
+            }
+          });
+        }
+
+        return lines.join('\n');
+      }
+
+      // fallback：不認識的 type，就直接把 JSON stringify 一下
+      return '系統回應：\n' + JSON.stringify(resp, null, 2);
+    }
+
+    async function callChatApi(query) {
+      const res = await fetch(`${API_BASE}/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ query }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      return await res.json();
+    }
+
+    async function loadHistory() {
+      try {
+        const res = await fetch(`${API_BASE}/history`);
+        if (!res.ok) {
+          console.warn('載入歷史失敗：', res.status);
+          return;
+        }
+        const data = await res.json();
+        const items = data.items || [];
+
+        // 依序把歷史紀錄畫出來
+        for (const item of items) {
+          if (item.query) {
+            appendMessage('user', item.query);
+          }
+          if (item.response) {
+            const botText = formatApiResponse(item.response);
+            appendMessage('bot', botText);
+          }
+        }
+      } catch (err) {
+        console.error('載入歷史錯誤：', err);
+      }
+    }
+
+    async function sendMessage() {
+      const text = chatInputEl.value.trim();
+      if (!text) return;
+
+      appendMessage('user', text);
+      chatInputEl.value = '';
+      chatInputEl.focus();
+      autoResizeTextarea();
+
+      sendBtnEl.disabled = true;
+
+      try {
+        const resp = await callChatApi(text);
+        const botText = formatApiResponse(resp);
+        appendMessage('bot', botText);
+      } catch (err) {
+        console.error(err);
+        appendMessage('bot', '呼叫後端 API 失敗，請稍後再試。');
+      } finally {
+        sendBtnEl.disabled = false;
+      }
+    }
+
+    function autoResizeTextarea() {
+      chatInputEl.style.height = 'auto';
+      chatInputEl.style.height = chatInputEl.scrollHeight + 'px';
+    }
+
+    // 事件綁定
+    sendBtnEl.addEventListener('click', sendMessage);
+
+    chatInputEl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+
+    chatInputEl.addEventListener('input', autoResizeTextarea);
+
+    // 初始化：先載入歷史，再補一則歡迎訊息（如果完全沒有紀錄）
+    async function initChat() {
+      await loadHistory();
+
+      if (chatMessagesEl.children.length === 0) {
+        appendMessage(
+          'bot',
+          '嗨～我是心快活小幫手 😊\n\n你可以問我：\n• 小孩、情緒、焦慮、失眠等困擾，幫你推薦影片和文章\n• 輸入地址或「台南市東區大學路1號附近有沒有心據點？」幫你找附近心據點'
+        );
+      }
+
+      chatInputEl.focus();
+    }
+
+    initChat();
+  </script>
+</body>
+</html>
