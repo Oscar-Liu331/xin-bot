@@ -13,6 +13,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
+from typing import Optional
+
 
 CITY_PATTERN = (
     r"(台北市|臺北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|"
@@ -53,6 +55,215 @@ STOP_WORDS = [
     "可以", "覺得", "自己",
     "的", "了", "呢", "嗎", "吧"
 ]
+
+def detect_special_intent(q: str) -> Optional[str]:
+    """
+    偵測是不是屬於「要直接給建議」的幾種常見問題：
+      - 憂鬱要不要看醫師
+      - 擔心家人失智，看哪一科
+      - 小學生手機玩太多
+      - 婆婆帶小孩教養衝突
+    回傳 intent 名稱，沒命中就回傳 None。
+    """
+    text = q.replace(" ", "")
+
+    # 1) 我覺得有點憂鬱，要不要看醫師？
+    if ("憂鬱" in text or "心情低落" in text or "心情不好" in text) and (
+        "看醫師" in text or "看醫生" in text or "要不要看" in text or "該不該看" in text
+    ):
+        return "depression_go_doctor"
+
+    # 2) 擔心爸爸 / 長輩失智，看哪一科？怎麼確定？
+    if "失智" in text and ("爸爸" in text or "媽媽" in text or "父親" in text or "母親" in text or "長輩" in text or "家人" in text):
+        return "dementia_parent"
+
+    # 3) 國小小孩手機玩太兇，怎麼辦？
+    if ("手機" in text or "平板" in text or "遊戲" in text) and (
+        "國小" in text or "小學" in text or "小孩" in text or "兒子" in text or "女兒" in text
+    ):
+        return "child_phone"
+
+    # 4) 婆婆照顧小孩方式和我很不一樣，怎麼辦？
+    if ("婆婆" in text or "公婆" in text) and ("小孩" in text or "孩子" in text or "照顧" in text or "帶小孩" in text or "顧小孩" in text):
+        return "mother_in_law_childcare"
+
+    return None
+
+def build_special_intent_response(intent: str, q: str) -> Dict[str, Any]:
+    """
+    把四種情境的建議，包成結構化 JSON，給前端渲染。
+    """
+    if intent == "depression_go_doctor":
+        title = "覺得自己有點憂鬱，該不該去看心理醫師？"
+        sections = [
+            {
+                "title": "1️⃣ 什麼情況比較建議找專業醫師或心理師？",
+                "items": [
+                    "情緒低落、沒動力、容易想哭，持續超過 2 週以上。",
+                    "影響到工作、課業、睡眠、食慾或人際關係。",
+                    "出現「不如消失算了」、「活著好累」這類負面或自傷的想法。"
+                ]
+            },
+            {
+                "title": "2️⃣ 可以看的科別 / 專業",
+                "items": [
+                    "醫院的「身心科 / 精神科」門診，可以評估是否需要用藥或進一步檢查。",
+                    "醫院或社區的「臨床心理師、諮商心理師」做心理諮商。",
+                    "如果還不確定，也可以先從「家醫科」或社區心理衛生中心諮詢開始。"
+                ]
+            },
+            {
+                "title": "3️⃣ 如果現在還勉強撐得住，可以先嘗試的調整",
+                "items": [
+                    "固定睡覺、起床時間，盡量少熬夜。",
+                    "找一個信任的人聊聊，把壓力說出來。",
+                    "先從短時間散步或簡單運動開始，讓身體動起來。"
+                ]
+            },
+            {
+                "title": "⚠️ 什麼情況要立刻尋求協助？",
+                "items": [
+                    "有明顯的自殺念頭、衝動，或已經想好方法。",
+                    "此時請儘快到醫院急診，或請家人朋友陪同就醫，並可聯絡自殺防治 / 心理支持專線。"
+                ]
+            }
+        ]
+
+    elif intent == "dementia_parent":
+        title = "擔心爸爸 / 家人可能有失智，怎麼確定？看哪一科？"
+        sections = [
+            {
+                "title": "1️⃣ 常見的失智警訊（舉例）",
+                "items": [
+                    "記憶力明顯變差：同一件事問很多次，忘記剛發生的事情。",
+                    "容易迷路：在熟悉的環境反而會走錯、找不到路。",
+                    "判斷力變差：例如容易被詐騙、做一些以前不會做的怪決定。",
+                    "性格或行為改變：變得明顯暴躁、退縮，或跟以前個性差很多。"
+                ]
+            },
+            {
+                "title": "2️⃣ 要怎麼比較確定是不是失智？",
+                "items": [
+                    "需要由醫師做完整評估，可能包括問診、神經心理量表、血液檢查、影像檢查等。",
+                    "家屬可以先整理最近觀察到的改變（從什麼時候開始、發生在什麼情境）。"
+                ]
+            },
+            {
+                "title": "3️⃣ 建議先看哪一科？",
+                "items": [
+                    "大型醫院常見科別：神經內科、家醫科、老年醫學科，部分醫院有「失智共同照護門診」。",
+                    "若長輩有明顯情緒或行為改變（如妄想、幻覺、嚴重焦慮），身心科 / 精神科也能協助評估。"
+                ]
+            },
+            {
+                "title": "4️⃣ 帶長輩看診的小技巧",
+                "items": [
+                    "可以用「做健康檢查」的方式邀請，而不是直接說「懷疑你失智」。",
+                    "看診時，家屬可把在家觀察到的狀況整理在紙上給醫師看，比較不會漏講。"
+                ]
+            }
+        ]
+
+    elif intent == "child_phone":
+        title = "國小孩子手機越玩越兇，我該怎麼辦？"
+        sections = [
+            {
+                "title": "1️⃣ 先了解「怎麼玩」而不只是「玩多久」",
+                "items": [
+                    "主要是在玩遊戲、看影片，還是跟同學聊天？",
+                    "通常在什麼時間點玩：寫功課前？睡前？假日整天？"
+                ]
+            },
+            {
+                "title": "2️⃣ 跟孩子一起「談規則」，不是只下命令",
+                "items": [
+                    "例如：平日每天可以玩 30–60 分鐘，先寫完作業、洗澡再開機。",
+                    "避免睡前 1 小時用手機，讓大腦有時間「降速」比較好睡。",
+                    "把規則寫在紙上貼出來，減少臨時吵架。"
+                ]
+            },
+            {
+                "title": "3️⃣ 提供替代活動，不是只有「不准玩」",
+                "items": [
+                    "安排可以一起做的事：桌遊、運動、散步、畫畫、做料理。",
+                    "假日約定「無手機時段」，全家一起做別的活動。"
+                ]
+            },
+            {
+                "title": "4️⃣ 大人也要當榜樣",
+                "items": [
+                    "如果父母一直滑手機，小孩很難接受「你不可以滑」。",
+                    "可以一起約定：吃飯、睡前半小時，全家都不看手機。"
+                ]
+            },
+            {
+                "title": "5️⃣ 什麼時候需要專業協助？",
+                "items": [
+                    "已經影響到學業、睡眠，或為了手機會大吵大鬧、摔東西。",
+                    "可以考慮諮詢：學校輔導老師、兒童青少年身心科、兒童臨床 / 諮商心理師。"
+                ]
+            }
+        ]
+
+    elif intent == "mother_in_law_childcare":
+        title = "婆婆照顧小孩方式跟我很不一樣，我該怎麼辦？"
+        sections = [
+            {
+                "title": "1️⃣ 先分辨：是『做法不同』還是『安全有疑慮』",
+                "items": [
+                    "做法不同但安全：例如零食多一點、看電視久一點，可以先當成「風格差異」。",
+                    "涉及安全：例如讓小孩單獨在陽台、吃容易噎到的食物，就需要比較堅定地溝通。"
+                ]
+            },
+            {
+                "title": "2️⃣ 溝通時，先感謝再表達擔心（用「我」訊息）",
+                "items": [
+                    "如：「我真的很感謝妳幫忙顧小孩，我會比較放心。」",
+                    "再接：「只是我有點擔心，他吃太多糖對牙齒不好，我想我們可不可以一起幫他少一點？」",
+                    "避免用「妳這樣不對」「妳把小孩帶壞了」，比較不會立刻變成吵架。"
+                ]
+            },
+            {
+                "title": "3️⃣ 儘量讓另一半當橋樑",
+                "items": [
+                    "自己的爸媽通常比較聽自己小孩的話。",
+                    "可以先跟另一半私下溝通好立場與底線，再由他 / 她跟婆婆說。"
+                ]
+            },
+            {
+                "title": "4️⃣ 建立幾條「全家共同的原則」",
+                "items": [
+                    "例如：用藥一定要問爸媽、不能打小孩、大約幾點睡覺。",
+                    "原則越清楚，越不會每件小事都吵成一團。"
+                ]
+            },
+            {
+                "title": "5️⃣ 如果衝突影響到你自己的情緒",
+                "items": [
+                    "可以考慮和諮商心理師談談，整理自己的委屈與角色壓力（媳婦 / 媽媽雙重身分）。",
+                    "有時候問題不只是教養技巧，也是你和先生、你和婆婆之間的界線。"
+                ]
+            }
+        ]
+
+    else:
+        title = "一般建議"
+        sections = [
+            {
+                "title": "",
+                "items": ["這個問題目前還沒有專門寫好的建議回答，先用課程與文章推薦模式幫你找資料。"]
+            }
+        ]
+
+    return {
+        "type": "advice",
+        "intent": intent,
+        "query": q,
+        "title": title,
+        "sections": sections
+    }
+
+
 def build_nearby_points_response(address: str, results):
     """
     把 find_nearby_points 的結果轉成 JSON-friendly 結構
@@ -511,21 +722,26 @@ def chat(req: ChatRequest):
             results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
             resp = build_nearby_points_response(addr, results)
 
-    # 3) 其他情況：當作課程推薦查詢
+    # 3) 特定情境：直接給建議，不走課程推薦
     else:
-        results = search_units(UNITS_CACHE, q, top_k=TOP_K)
-        resp = build_recommendations_response(q, results)
+        special_intent = detect_special_intent(q)
+        if special_intent:
+            resp = build_special_intent_response(special_intent, q)
+        else:
+            # 4) 其他情況：當作課程 / 文章推薦查詢
+            results = search_units(UNITS_CACHE, q, top_k=TOP_K)
+            resp = build_recommendations_response(q, results)
 
-    # --- 在這裡記錄歷史 ---
+    # --- 記錄歷史 ---
     HISTORY.append({
         "query": q,
         "response": resp,
     })
-    # 最多保留 50 筆，太舊的丟掉
     if len(HISTORY) > 50:
         HISTORY.pop(0)
 
     return resp
+
 
 @app.get("/history")
 def get_history():
@@ -563,3 +779,7 @@ def recommend(req: RecommendRequest):
     q = req.query.strip()
     results = search_units(UNITS_CACHE, q, top_k=TOP_K)
     return build_recommendations_response(q, results)
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("xin_api:app", host="0.0.0.0", port=8000, reload=True)
