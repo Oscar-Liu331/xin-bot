@@ -65,29 +65,42 @@ def detect_special_intent(q: str) -> Optional[str]:
       - 婆婆帶小孩教養衝突
     回傳 intent 名稱，沒命中就回傳 None。
     """
-    text = q.replace(" ", "")
+    # 去掉空白符號
+    text = re.sub(r"\s+", "", q)
 
-    # 1) 我覺得有點憂鬱，要不要看醫師？
-    if ("憂鬱" in text or "心情低落" in text or "心情不好" in text) and (
-        "看醫師" in text or "看醫生" in text or "要不要看" in text or "該不該看" in text
-    ):
+    # ---------- 1) 我覺得有點憂鬱，要不要看醫師？ ----------
+    has_depression_word = any(w in text for w in ["憂鬱", "心情低落", "心情不好", "情緒低落"])
+    # 只要有「看」+（醫師/醫生/心理/身心科/精神科）就視為問就醫
+    has_see_doctor = (
+        "看" in text and (
+            "醫師" in text or "醫生" in text or "心理師" in text or
+            "心理醫師" in text or "身心科" in text or "精神科" in text
+        )
+    )
+    # 額外加一些常見語氣
+    has_doubt_phrase = any(w in text for w in ["要不要", "該不該", "需不需要", "要不要去"])
+
+    if has_depression_word and (has_see_doctor or has_doubt_phrase):
         return "depression_go_doctor"
 
-    # 2) 擔心爸爸 / 長輩失智，看哪一科？怎麼確定？
-    if "失智" in text and ("爸爸" in text or "媽媽" in text or "父親" in text or "母親" in text or "長輩" in text or "家人" in text):
+    # ---------- 2) 擔心爸爸 / 長輩失智，看哪一科？ ----------
+    if "失智" in text and any(w in text for w in ["爸爸", "媽媽", "父親", "母親", "長輩", "家人", "阿公", "阿嬤"]):
         return "dementia_parent"
 
-    # 3) 國小小孩手機玩太兇，怎麼辦？
-    if ("手機" in text or "平板" in text or "遊戲" in text) and (
-        "國小" in text or "小學" in text or "小孩" in text or "兒子" in text or "女兒" in text
-    ):
+    # ---------- 3) 國小小孩手機玩太兇，怎麼辦？ ----------
+    has_device = any(w in text for w in ["手機", "平板", "遊戲", "電動", "線上遊戲"])
+    has_child = any(w in text for w in ["國小", "小學", "小孩", "孩子", "兒子", "女兒", "國三", "國二", "國一"])
+    if has_device and has_child:
         return "child_phone"
 
-    # 4) 婆婆照顧小孩方式和我很不一樣，怎麼辦？
-    if ("婆婆" in text or "公婆" in text) and ("小孩" in text or "孩子" in text or "照顧" in text or "帶小孩" in text or "顧小孩" in text):
+    # ---------- 4) 婆婆照顧小孩方式和我很不一樣 ----------
+    has_inlaw = any(w in text for w in ["婆婆", "公婆", "婆家"])
+    has_childcare = any(w in text for w in ["小孩", "孩子", "顧小孩", "帶小孩", "照顧", "教養"])
+    if has_inlaw and has_childcare:
         return "mother_in_law_childcare"
 
     return None
+
 
 def build_special_intent_response(intent: str, q: str) -> Dict[str, Any]:
     """
