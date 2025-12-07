@@ -240,7 +240,7 @@
     const sendBtnEl = document.getElementById('sendBtn');
 
     // 如果 HTML 不是跟 API 同網域，這邊可以改成 'http://localhost:8000'
-    const API_BASE = '';
+    const API_BASE = 'http://localhost:8000';
 
     // 取得現在時間字串 HH:MM
     function getTimeString() {
@@ -286,11 +286,41 @@
     }
 
     // 把 API 回傳的 JSON 轉成聊天框裡的文字
+    // 把 API 回傳的 JSON 轉成聊天框裡的文字
     function formatApiResponse(resp) {
       if (!resp || typeof resp !== 'object') {
         return '（系統沒有回傳可顯示的資訊）';
       }
 
+      // ① 新增：處理「建議型」回答
+      if (resp.type === 'advice') {
+        const lines = [];
+
+        // 主標題
+        if (resp.title) {
+          lines.push(`【${resp.title}】`);
+          lines.push('');
+        } else {
+          lines.push('根據你的敘述，先給你一些方向性的建議：');
+          lines.push('');
+        }
+
+        // sections: [{ title, items: [] }, ...]
+        (resp.sections || []).forEach((sec) => {
+          if (sec.title && sec.title.trim() !== '') {
+            // sec.title 裡面已經有 1️⃣ 2️⃣ 等編號，就直接印
+            lines.push(sec.title);
+          }
+          (sec.items || []).forEach((item, idx) => {
+            lines.push(`  ${idx + 1}. ${item}`);
+          });
+          lines.push(''); // 段落之間空一行
+        });
+
+        return lines.join('\n');
+      }
+
+      // ② 心據點查詢
       if (resp.type === 'xin_points') {
         const addr = resp.address || '（未指定地址）';
         const points = resp.points || [];
@@ -318,6 +348,7 @@
         return lines.join('\n');
       }
 
+      // ③ 課程 / 文章推薦
       if (resp.type === 'course_recommendation') {
         const results = resp.results || [];
         let lines = [];
@@ -352,9 +383,10 @@
         return lines.join('\n');
       }
 
-      // fallback：不認識的 type，就直接把 JSON stringify 一下
+      // ④ fallback：不認識的 type，就直接把 JSON stringify 一下
       return '系統回應：\n' + JSON.stringify(resp, null, 2);
     }
+
 
     async function callChatApi(query) {
       const res = await fetch(`${API_BASE}/chat`, {
