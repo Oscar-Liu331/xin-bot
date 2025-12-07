@@ -658,7 +658,9 @@ app.add_middleware(
 
 # ▼▼ 新增：讓 /static 底下可以直接抓檔案 ▼▼
 app.mount("/static", StaticFiles(directory="static"), name="static")
-
+@app.get("/", include_in_schema=False)
+def serve_index():
+    return FileResponse("static/index.html")
 
 # ▼▼ 新增：讓 "/" 直接回 index.html ▼▼
 @app.get("/", include_in_schema=False)
