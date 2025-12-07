@@ -67,6 +67,7 @@ def detect_special_intent(q: str) -> Optional[str]:
     """
     # 去掉空白符號
     text = re.sub(r"\s+", "", q)
+    print(f"[intent-debug] raw='{q}' text='{text}'")
 
     # ---------- 1) 我覺得有點憂鬱，要不要看醫師？ ----------
     has_depression_word = any(w in text for w in ["憂鬱", "心情低落", "心情不好", "情緒低落"])
@@ -738,6 +739,7 @@ def chat(req: ChatRequest):
     # 3) 特定情境：直接給建議，不走課程推薦
     else:
         special_intent = detect_special_intent(q)
+        print(f"[chat-debug] special_intent={special_intent}")
         if special_intent:
             resp = build_special_intent_response(special_intent, q)
         else:
