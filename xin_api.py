@@ -698,7 +698,7 @@ def chat(req: ChatRequest):
     q = req.query.strip()
     session_id = req.session_id or "anonymous"  # 沒傳就先歸到 anonymous（理論上前端都會傳）
     resp: Dict[str, Any]
-
+    print(">>> /chat session_id =", session_id)
     # 1) 判斷是否為「心據點」/「看診」詢問
     if ("附近" in q) and ("心據點" in q or "看診" in q or "門診" in q):
         addr = extract_address_from_query(q)
@@ -768,7 +768,9 @@ def get_history(session_id: str):
     依 session_id 回傳專屬聊天紀錄。
     /history?session_id=xxxx
     """
+    print(">>> /history called session_id =", session_id)
     items = HISTORY.get(session_id, [])
+    print(">>> HISTORY keys =", list(HISTORY.keys()))
     return {
         "items": items
     }
