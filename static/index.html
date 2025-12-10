@@ -242,6 +242,22 @@
     // 如果 HTML 不是跟 API 同網域，這邊可以改成 'http://localhost:8000'
     const API_BASE = '';
 
+
+    // ==== 新增：建立 / 取得使用者專屬 session_id ====
+    let SESSION_ID = localStorage.getItem('xin_session_id');
+
+    if (!SESSION_ID) {
+      if (window.crypto && crypto.randomUUID) {
+        SESSION_ID = crypto.randomUUID();
+      } else {
+        // 簡單備援：時間戳 + 隨機數
+        SESSION_ID = 'sess-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);
+      }
+      localStorage.setItem('xin_session_id', SESSION_ID);
+    }
+
+    console.log('SESSION_ID =', SESSION_ID);
+
     // 取得現在時間字串 HH:MM
     function getTimeString() {
       const d = new Date();
@@ -378,7 +394,10 @@
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ query }),
+        body: JSON.stringify({
+          query,
+          session_id: SESSION_ID, // 🔸帶上 session_id
+        }),
       });
 
       if (!res.ok) {

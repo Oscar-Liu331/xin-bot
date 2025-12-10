@@ -672,11 +672,12 @@ def serve_index():
 UNITS_CACHE: List[Dict[str, Any]] = load_all_units()
 
 # 簡單放在記憶體的聊天紀錄（server 重啟會清空）
-HISTORY: List[Dict[str, Any]] = []
+HISTORY: Dict[str, List[Dict[str, Any]] ] = {}
 
 
 class ChatRequest(BaseModel):
     query: str
+    session_id: Optional[str] = None
 
 
 class NearbyRequest(BaseModel):
@@ -695,7 +696,7 @@ def ping():
 @app.post("/chat")
 def chat(req: ChatRequest):
     q = req.query.strip()
-
+    session_id = req.session_id or "anonymous"  # 沒傳就先歸到 anonymous（理論上前端都會傳）
     resp: Dict[str, Any]
 
     # 1) 判斷是否為「心據點」/「看診」詢問
@@ -749,21 +750,27 @@ def chat(req: ChatRequest):
             results = search_units(UNITS_CACHE, q, top_k=TOP_K)
             resp = build_recommendations_response(q, results)
 
-    # --- 記錄歷史 ---
-    HISTORY.append({
+    # --- 記錄歷史：依 session_id 分開 ---
+    history_list = HISTORY.setdefault(session_id, [])
+    history_list.append({
         "query": q,
         "response": resp,
     })
-    if len(HISTORY) > 50:
-        HISTORY.pop(0)
+    if len(history_list) > 50:
+        history_list.pop(0)
 
     return resp
 
 
 @app.get("/history")
-def get_history():
+def get_history(session_id: str):
+    """
+    依 session_id 回傳專屬聊天紀錄。
+    /history?session_id=xxxx
+    """
+    items = HISTORY.get(session_id, [])
     return {
-        "items": HISTORY
+        "items": items
     }
 
 @app.post("/nearby")
