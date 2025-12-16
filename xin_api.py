@@ -640,29 +640,33 @@ def score_unit(unit, query_terms, core_terms):
 
     return final_score, best_seg
 
-EP_RE = re.compile(r"(（上）|（下）|\(上\)|\(下\)|上篇|下篇|上集|下集|上|下)$")
+# 把「(上)/(下)/(（上）)/(（下）)/上篇/下篇/上集/下集」視為集數標記（可出現在任何位置）
+EP_TAG_RE = re.compile(r"(（上）|（下）|\(上\)|\(下\)|上篇|下篇|上集|下集)")
 
 def get_episode_tag(title: str) -> Optional[str]:
-    """回傳 '上' / '下' / None"""
+    """回傳 '上' / '下' / None（不限出現在結尾）"""
     if not title:
         return None
     t = title.strip()
-    if t.endswith(("（上）", "(上)", "上篇", "上集", "上")):
+    if re.search(r"(（上）|\(上\)|上篇|上集)", t):
         return "上"
-    if t.endswith(("（下）", "(下)", "下篇", "下集", "下")):
+    if re.search(r"(（下）|\(下\)|下篇|下集)", t):
         return "下"
     return None
 
 def get_base_key(section_title: str, title: str) -> str:
     """
     用來把「上/下」視為同一組的 key
-    你可以用 section_title + title 去掉尾巴「上/下」來當 key
+    - 移除標題中的上/下標記（不限位置）
+    - 再用 section_title + 清理後 title 當 key
     """
     s = (section_title or "").strip()
     t = (title or "").strip()
-    # 去掉尾巴的（上）（下）…等
-    t2 = EP_RE.sub("", t).strip()
-    return f"{s}||{t2}"
+    t2 = EP_TAG_RE.sub("", t)  # ✅ 不限結尾，直接把(上)/(下)移除
+    t2 = re.sub(r"\s+", "", t2)  # 可選：去空白，讓 key 更穩
+    s2 = re.sub(r"\s+", "", s)
+    return f"{s2}||{t2}"
+
 
 def reorder_episode_pairs(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # 建索引：每個 base_key 的上/下（若同一組出現多筆，保留分數較高者）
