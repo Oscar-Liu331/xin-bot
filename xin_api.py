@@ -312,54 +312,58 @@ def build_nearby_points_response(address: str, results):
     }
 
 
-def build_recommendations_response(query: str,results: List[Dict[str, Any]],offset: int = 0,limit: int = TOP_K):
-
+def build_recommendations_response(
+    query: str,
+    results: List[Dict[str, Any]],
+    offset: int = 0,
+    limit: int = TOP_K
+):
+    # 先做「上/下」重排（只有上篇存在於 results 才會插到下篇前）
     results = reorder_episode_pairs(results)
 
     total = len(results)
-    page = results[offset: offset + limit]
+    has_more = offset + limit < total
+    page_results = results[offset: offset + limit]
 
     video_count = sum(1 for r in results if not r.get("is_article"))
     article_count = sum(1 for r in results if r.get("is_article"))
-    total = len(results)
-    page_results = results[offset: offset + limit]
 
-    """
-    把 search_units 的結果轉成 JSON-friendly 結構
-    """
-
-    if not results:
+    if total == 0:
         return {
             "type": "course_recommendation",
             "query": query,
+            "total": 0,
+            "video_count": 0,
+            "article_count": 0,
+            "offset": offset,
+            "limit": limit,
+            "has_more": False,
             "results": [],
             "message": "目前找不到很符合的課程，可以試著用：婆媳、壓力、憂鬱、失眠… 等詞再試試看。"
         }
 
     items = []
-    for r in results[:TOP_K]:
+    for r in page_results:
         title = r.get("title") or "(無標題)"
         section_title = r.get("section_title") or "(未分類小節)"
         score = r.get("_score", 0.0)
 
         is_article = bool(r.get("is_article"))
-        youtube_url = r.get("youtube_url")
         entry: Dict[str, Any] = {
             "section_title": section_title,
             "title": title,
             "score": score,
+            "type": "article" if is_article else "video",
         }
 
         if is_article:
             article_url = r.get("article_url") or r.get("url")
             content_text = (r.get("content_text") or "").replace("\n", " ")
             snippet = content_text[:100] + ("..." if len(content_text) > 100 else "")
-
-            entry["type"] = "article"
             entry["article_url"] = article_url
             entry["snippet"] = snippet
-
         else:
+            youtube_url = r.get("youtube_url")
             seg = r.get("_best_segment")
             if seg:
                 start_sec = seg.get("start_sec", 0.0)
@@ -369,23 +373,23 @@ def build_recommendations_response(query: str,results: List[Dict[str, Any]],offs
             else:
                 hint = "字幕裡沒有特別命中關鍵句，可以從頭開始看。"
 
-            entry["type"] = "video"
             entry["youtube_url"] = youtube_url
             entry["hint"] = hint
 
         items.append(entry)
 
     return {
-    "type": "course_recommendation",
-    "query": query,
-    "total": total,
-    "video_count": video_count,
-    "article_count": article_count,
-    "offset": offset,
-    "limit": limit,
-    "has_more": offset + limit < total,
-    "results": items
+        "type": "course_recommendation",
+        "query": query,
+        "total": total,
+        "video_count": video_count,
+        "article_count": article_count,
+        "offset": offset,
+        "limit": limit,
+        "has_more": has_more,
+        "results": items
     }
+
 
 def load_xin_points() -> List[Dict[str, Any]]:
     try:
@@ -657,13 +661,6 @@ def get_base_key(section_title: str, title: str) -> str:
     return f"{s}||{t2}"
 
 def reorder_episode_pairs(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    規則：
-    - 如果某個 base_key 出現「下」但沒有「上」
-    - 且「上」其實存在於 results 內（代表符合、只是分數低）
-    => 把「上」插到「下」前面
-    """
-    # 先建索引：每一組 base_key 的上/下最佳候選
     group = {}
     for r in results:
         key = get_base_key(r.get("section_title"), r.get("title"))
@@ -671,9 +668,9 @@ def reorder_episode_pairs(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         if tag in ("上", "下"):
             group.setdefault(key, {})[tag] = r
 
-    # 再依原排序走一遍，遇到「下」就補「上」
     out = []
     seen = set()
+
     for r in results:
         rid = id(r)
         if rid in seen:
@@ -684,14 +681,17 @@ def reorder_episode_pairs(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
 
         if tag == "下":
             up = group.get(key, {}).get("上")
-            if up is not None:
+
+            if up is None:
+                # ✅ 只有下篇，上篇不在候選 results → 判定不符合/被刷掉 → 不處理
                 print("[pair] 只有下篇，上篇不在 results（判定：不符合/被刷掉）:", r.get("title"))
+            else:
+                # ✅ 上篇存在於候選 results → 判定分數較低 → 插到下篇前面
+                print("[pair] 下篇命中，上篇存在（判定：分數較低，將上篇插前）:", up.get("title"), "->", r.get("title"))
                 up_id = id(up)
                 if up_id not in seen:
                     out.append(up)
-                    seen.add(up_id)                
-            else:
-                print("[pair] 下篇命中，上篇存在（判定：分數較低，將上篇插前）:", up.get("title"), "->", r.get("title"))
+                    seen.add(up_id)
 
         out.append(r)
         seen.add(rid)
@@ -917,8 +917,8 @@ def nearby(req: NearbyRequest):
 @app.post("/recommend")
 def recommend(req: RecommendRequest):
     q = req.query.strip()
-    results = search_units(UNITS_CACHE, q, top_k=TOP_K)
-    return build_recommendations_response(q, results)
+    full_results = search_units(UNITS_CACHE, q, top_k=9999)
+    resp = build_recommendations_response(q, full_results, offset=0, limit=TOP_K)
 
 if __name__ == "__main__":
     import uvicorn
