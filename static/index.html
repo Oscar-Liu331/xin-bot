@@ -5,6 +5,14 @@
   <title>心快活 聊天推薦小幫手</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
+    .message-bubble a {
+      color: #2563eb;
+      text-decoration: underline;
+    }
+    .message-row.user .message-bubble a {
+      color: #ffffff;
+      text-decoration: underline;
+    }
     * {
       box-sizing: border-box;
       margin: 0;
@@ -267,7 +275,7 @@
     }
 
     // 建立一則訊息 DOM
-    function appendMessage(role, text) {
+    function appendMessage(role, text, asHtml = false) {
       const row = document.createElement('div');
       row.classList.add('message-row', role);
 
@@ -278,7 +286,12 @@
       const bubbleWrap = document.createElement('div');
       const bubble = document.createElement('div');
       bubble.classList.add('message-bubble');
-      bubble.textContent = text;
+
+      if (asHtml) {
+        bubble.innerHTML = text;   // ✅ 讓 <a> 生效
+      } else {
+        bubble.textContent = text; // ✅ 原本純文字
+      }
 
       const meta = document.createElement('div');
       meta.classList.add('message-meta');
@@ -296,10 +309,9 @@
       }
 
       chatMessagesEl.appendChild(row);
-
-      // 自動捲到底
       chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
     }
+
 
     // 把 API 回傳的 JSON 轉成聊天框裡的文字
     function formatApiResponse(resp) {
@@ -362,54 +374,53 @@
         const lines = [];
         const results = resp.results || [];
 
-        // === 總覽資訊 ===
-        lines.push(
-          `📚 共找到 ${resp.total} 筆內容（🎥 影片 ${resp.video_count}、📄 文章 ${resp.article_count}）`
-        );
+        // ✅ 先顯示總覽
+        lines.push(`📚 共找到 ${resp.total} 筆內容（🎥 影片 ${resp.video_count}、📄 文章 ${resp.article_count}）`);
+        lines.push(`目前顯示第 ${resp.offset + 1}～${Math.min(resp.offset + resp.limit, resp.total)} 筆`);
+        lines.push('');
 
-        lines.push(
-          `目前顯示第 ${resp.offset + 1}～${Math.min(resp.offset + resp.limit, resp.total)} 筆`
-        );
-        lines.push(''); // 空行
-
-        // === 沒結果 ===
         if (results.length === 0) {
           lines.push(resp.message || '目前找不到很符合的課程，可以換個關鍵字再試試。');
-          return lines.join('\n');
+          // ✅ 回傳 HTML（把換行轉 br）
+          return lines.join('\n').replace(/\n/g, '<br>');
         }
 
-        // === 顯示推薦內容 ===
         lines.push('根據你的敘述，我幫你找了這些課程 / 文章：');
 
         results.forEach((item, idx) => {
           const sec = item.section_title || '';
           const title = item.title || '(無標題)';
-          lines.push(`\n${idx + 1}. ${sec ? '【' + sec + '】' : ''}${title}`);
+          const kind = item.type === 'article' ? '文章' : '影片';
+
+          // ✅ 標題前面加【影片】/【文章】
+          lines.push('');
+          lines.push(`${idx + 1}. 【${kind}】${sec ? '【' + sec + '】' : ''}${title}`);
 
           if (item.type === 'video') {
             if (item.youtube_url) {
-              lines.push(`   🎥 影片連結：${item.youtube_url}`);
+              // ✅ 超連結
+              lines.push(`   🎥 影片連結：<a href="${item.youtube_url}" target="_blank" rel="noopener noreferrer">${item.youtube_url}</a>`);
             }
-            if (item.hint) {
-              lines.push(`   💡 小提醒：${item.hint}`);
-            }
+            if (item.hint) lines.push(`   💡 小提醒：${item.hint}`);
           } else if (item.type === 'article') {
             if (item.article_url) {
-              lines.push(`   📄 文章連結：${item.article_url}`);
+              // ✅ 超連結
+              lines.push(`   📄 文章連結：<a href="${item.article_url}" target="_blank" rel="noopener noreferrer">${item.article_url}</a>`);
             }
-            if (item.snippet) {
-              lines.push(`   ✂️ 節錄：${item.snippet}`);
-            }
+            if (item.snippet) lines.push(`   🧾 節錄：${item.snippet}`);
           }
         });
 
-        // === 是否還有下一頁 ===
+        // ✅ 有下一頁就提示
         if (resp.has_more) {
-          lines.push('\n👉 輸入「給我後五個」可以看更多');
+          lines.push('');
+          lines.push('👉 輸入「給我後五個」可以看更多');
         }
 
-        return lines.join('\n');
+        // ✅ 回傳 HTML（把換行轉 br）
+        return lines.join('\n').replace(/\n/g, '<br>');
       }
+
 
       // ④ fallback
       return '系統回應：\n' + JSON.stringify(resp, null, 2);
@@ -450,8 +461,8 @@
             appendMessage('user', item.query);
           }
           if (item.response) {
-            const botText = formatApiResponse(item.response);
-            appendMessage('bot', botText);
+            const botHtml = formatApiResponse(item.response);
+            appendMessage('bot', botHtml, true); // ✅ 第三個參數 true
           }
         }
       } catch (err) {
@@ -472,8 +483,8 @@
 
       try {
         const resp = await callChatApi(text);
-        const botText = formatApiResponse(resp);
-        appendMessage('bot', botText);
+        const botHtml  = formatApiResponse(resp);
+        appendMessage('bot', botHtml, true);
       } catch (err) {
         console.error(err);
         appendMessage('bot', '呼叫後端 API 失敗，請稍後再試。');
