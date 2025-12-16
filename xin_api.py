@@ -60,7 +60,7 @@ STOP_WORDS = [
 ]
 
 def detect_pagination_intent(q: str) -> bool:
-    return any(w in q for w in ["後五個", "下五個", "再給我", "更多"])
+    return any(w in q for w in ["給我後五個","給我下五個","後五個","下五個","下一頁","更多推薦"])
 
 def detect_special_intent(q: str) -> Optional[str]:
     """
@@ -757,12 +757,6 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 def serve_index():
     return FileResponse("static/index.html")
 
-# ▼▼ 新增：讓 "/" 直接回 index.html ▼▼
-@app.get("/", include_in_schema=False)
-def serve_index():
-    # static/index.html
-    return FileResponse("static/index.html")
-
 # 啟動時就先載入所有單元
 UNITS_CACHE: List[Dict[str, Any]] = load_all_units()
 
@@ -924,6 +918,7 @@ def recommend(req: RecommendRequest):
     q = req.query.strip()
     full_results = search_units(UNITS_CACHE, q, top_k=9999)
     resp = build_recommendations_response(q, full_results, offset=0, limit=TOP_K)
+    return resp
 
 if __name__ == "__main__":
     import uvicorn
