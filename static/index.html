@@ -359,26 +359,53 @@
 
       // ③ 課程 / 文章推薦
       if (resp.type === 'course_recommendation') {
+        const lines = [];
         const results = resp.results || [];
-        let lines = [];
 
+        // === 總覽資訊 ===
+        lines.push(
+          `📚 共找到 ${resp.total} 筆內容（🎥 影片 ${resp.video_count}、📄 文章 ${resp.article_count}）`
+        );
+
+        lines.push(
+          `目前顯示第 ${resp.offset + 1}～${Math.min(resp.offset + resp.limit, resp.total)} 筆`
+        );
+        lines.push(''); // 空行
+
+        // === 沒結果 ===
         if (results.length === 0) {
           lines.push(resp.message || '目前找不到很符合的課程，可以換個關鍵字再試試。');
-        } else {
-          lines.push('根據你的敘述，我幫你找了這些課程 / 文章：');
-          results.forEach((item, idx) => {
-            const sec = item.section_title || '';
-            const title = item.title || '(無標題)';
-            lines.push(`\n${idx + 1}. ${sec ? '【' + sec + '】' : ''}${title}`);
+          return lines.join('\n');
+        }
 
-            if (item.type === 'video') {
-              if (item.youtube_url) lines.push(`   影片連結：${item.youtube_url}`);
-              if (item.hint) lines.push(`   小提醒：${item.hint}`);
-            } else if (item.type === 'article') {
-              if (item.article_url) lines.push(`   文章連結：${item.article_url}`);
-              if (item.snippet) lines.push(`   節錄：${item.snippet}`);
+        // === 顯示推薦內容 ===
+        lines.push('根據你的敘述，我幫你找了這些課程 / 文章：');
+
+        results.forEach((item, idx) => {
+          const sec = item.section_title || '';
+          const title = item.title || '(無標題)';
+          lines.push(`\n${idx + 1}. ${sec ? '【' + sec + '】' : ''}${title}`);
+
+          if (item.type === 'video') {
+            if (item.youtube_url) {
+              lines.push(`   🎥 影片連結：${item.youtube_url}`);
             }
-          });
+            if (item.hint) {
+              lines.push(`   💡 小提醒：${item.hint}`);
+            }
+          } else if (item.type === 'article') {
+            if (item.article_url) {
+              lines.push(`   📄 文章連結：${item.article_url}`);
+            }
+            if (item.snippet) {
+              lines.push(`   ✂️ 節錄：${item.snippet}`);
+            }
+          }
+        });
+
+        // === 是否還有下一頁 ===
+        if (resp.has_more) {
+          lines.push('\n👉 輸入「給我後五個」可以看更多');
         }
 
         return lines.join('\n');

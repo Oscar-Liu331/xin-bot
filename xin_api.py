@@ -45,6 +45,9 @@ MENTAL_KEYWORDS = [
     "小孩", "孩子", "幼兒", "青少年",
     "教養", "親子", "親子衝突", "親子關係",
     "吵架", "頂嘴", "哭鬧", "情緒失控", "脾氣",
+    
+    "繪本","故事",
+    "長輩過世",
 ]
 
 STOP_WORDS = [
@@ -55,6 +58,9 @@ STOP_WORDS = [
     "可以", "覺得", "自己",
     "的", "了", "呢", "嗎", "吧"
 ]
+
+def detect_pagination_intent(q: str) -> bool:
+    return any(w in q for w in ["後五個", "下五個", "再給我", "更多"])
 
 def detect_special_intent(q: str) -> Optional[str]:
     """
@@ -306,10 +312,17 @@ def build_nearby_points_response(address: str, results):
     }
 
 
-def build_recommendations_response(query: str, results: List[Dict[str, Any]]):
+def build_recommendations_response(query: str,results: List[Dict[str, Any]],offset: int = 0,limit: int = TOP_K):
+
+    video_count = sum(1 for r in results if not r.get("is_article"))
+    article_count = sum(1 for r in results if r.get("is_article"))
+    total = len(results)
+    page_results = results[offset: offset + limit]
+
     """
     把 search_units 的結果轉成 JSON-friendly 結構
     """
+
     if not results:
         return {
             "type": "course_recommendation",
@@ -358,9 +371,15 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]]):
         items.append(entry)
 
     return {
-        "type": "course_recommendation",
-        "query": query,
-        "results": items
+    "type": "course_recommendation",
+    "query": query,
+    "total": total,
+    "video_count": video_count,
+    "article_count": article_count,
+    "offset": offset,
+    "limit": limit,
+    "has_more": offset + limit < total,
+    "results": items
     }
 
 def load_xin_points() -> List[Dict[str, Any]]:
@@ -738,7 +757,31 @@ def chat(req: ChatRequest):
             lat, lon = geo
             results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
             resp = build_nearby_points_response(addr, results)
+    elif detect_pagination_intent(q):
+        history = HISTORY.get(session_id, [])
+        # 找最近一筆「課程推薦」
+        last = next(
+            (h for h in reversed(history)
+            if h["response"].get("type") == "course_recommendation"),
+            None
+        )
 
+        if not last:
+            resp = {
+                "type": "text",
+                "message": "目前沒有上一筆推薦結果，可以先問一個問題 😊"
+            }
+        else:
+            prev = last["response"]
+            new_offset = prev["offset"] + prev["limit"]
+
+            full_results = search_units(UNITS_CACHE, prev["query"], top_k=9999)
+            resp = build_recommendations_response(
+                prev["query"],
+                full_results,
+                offset=new_offset,
+                limit=TOP_K
+            )
     # 3) 特定情境：直接給建議，不走課程推薦
     else:
         special_intent = detect_special_intent(q)
