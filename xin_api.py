@@ -669,41 +669,56 @@ def get_base_key(section_title: str, title: str) -> str:
 
 
 def reorder_episode_pairs(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    # 建索引：每個 base_key 的上/下（若同一組出現多筆，保留分數較高者）
-    group: Dict[str, Dict[str, Dict[str, Any]]] = {}
-    for r in results:
+    """
+    目標：
+    - 同一系列（同 base_key）的上/下要黏在一起：上 → 下
+    - 系列與系列之間，用該系列的代表分數排序（預設取系列內最高 _score）
+    - 沒有上/下標記的單篇，視為一個獨立系列，保留原本項目本身
+    """
+
+    # 1) 建立群組：key -> {"items": [...], "best_score": float, "first_idx": int}
+    groups: Dict[str, Dict[str, Any]] = {}
+
+    for idx, r in enumerate(results):
         key = get_base_key(r.get("section_title"), r.get("title"))
+        score = float(r.get("_score", 0.0))
+
+        g = groups.get(key)
+        if g is None:
+            groups[key] = {
+                "items": [],
+                "best_score": score,
+                "first_idx": idx,  # 若分數一樣，用最早出現順序當 tie-break
+            }
+            g = groups[key]
+
+        g["items"].append(r)
+        if score > g["best_score"]:
+            g["best_score"] = score
+
+    # 2) 每組內：上→下→其他（如果有奇怪的沒標記）
+    def item_rank(r: Dict[str, Any]) -> int:
         tag = get_episode_tag(r.get("title") or "")
-        if tag in ("上", "下"):
-            g = group.setdefault(key, {})
-            if tag not in g or (r.get("_score", 0) > g[tag].get("_score", 0)):
-                g[tag] = r
-
-    out: List[Dict[str, Any]] = []
-    seen = set()
-
-    for r in results:
-        rid = id(r)
-        if rid in seen:
-            continue
-
-        key = get_base_key(r.get("section_title"), r.get("title"))
-        tag = get_episode_tag(r.get("title") or "")
-
-        # 遇到下篇 → 若上篇也在 results（代表符合，只是分數較低/位置較後）→ 插到下篇前
+        if tag == "上":
+            return 0
         if tag == "下":
-            up = group.get(key, {}).get("上")
-            if up is None:
-                print("[pair] 只有下篇，上篇不在 results（判定：不符合/被刷掉）:", r.get("title"))
-            else:
-                print("[pair] 下篇命中，上篇存在（判定：分數較低，將上篇插前）:", up.get("title"), "->", r.get("title"))
-                up_id = id(up)
-                if up_id not in seen:
-                    out.append(up)
-                    seen.add(up_id)
+            return 1
+        return 2
 
-        out.append(r)
-        seen.add(rid)
+    for g in groups.values():
+        # 同一組可能有多個上或多個下：同 rank 內再用分數高的排前
+        g["items"].sort(key=lambda r: (item_rank(r), -float(r.get("_score", 0.0))))
+
+    # 3) 組與組之間排序：分數高的組排前；分數同則用 first_idx 保持穩定
+    ordered_groups = sorted(
+        groups.values(),
+        key=lambda g: (-g["best_score"], g["first_idx"])
+    )
+
+    # 4) 攤平成一條 list
+    out: List[Dict[str, Any]] = []
+    for g in ordered_groups:
+        out.extend(g["items"])
 
     return out
 
