@@ -318,17 +318,8 @@ def build_recommendations_response(
     offset: int = 0,
     limit: int = TOP_K
 ):
-    # 先做「上/下」重排（只有上篇存在於 results 才會插到下篇前）
-    results = reorder_episode_pairs(results)
-
-    total = len(results)
-    has_more = offset + limit < total
-    page_results = results[offset: offset + limit]
-
-    video_count = sum(1 for r in results if not r.get("is_article"))
-    article_count = sum(1 for r in results if r.get("is_article"))
-
-    if total == 0:
+    # 沒有結果
+    if not results:
         return {
             "type": "course_recommendation",
             "query": query,
@@ -342,17 +333,31 @@ def build_recommendations_response(
             "message": "目前找不到很符合的課程，可以試著用：婆媳、壓力、憂鬱、失眠… 等詞再試試看。"
         }
 
+    # ✅ 先重排（分頁前）
+    results = reorder_episode_pairs(results)
+
+    total = len(results)
+    # ✅ 計算總數（用重排後的 results 統計即可）
+    video_count = sum(1 for r in results if not r.get("is_article"))
+    article_count = sum(1 for r in results if r.get("is_article"))
+
+    # ✅ 正確切分頁
+    page_results = results[offset: offset + limit]
+
     items = []
-    for r in page_results:
+    for r in page_results:  # ✅ 一定要用 page_results
         title = r.get("title") or "(無標題)"
         section_title = r.get("section_title") or "(未分類小節)"
         score = r.get("_score", 0.0)
 
         is_article = bool(r.get("is_article"))
+        youtube_url = r.get("youtube_url")
+
         entry: Dict[str, Any] = {
             "section_title": section_title,
             "title": title,
             "score": score,
+            "is_article": is_article,  # ✅ 給前端直接用
             "type": "article" if is_article else "video",
         }
 
@@ -363,7 +368,6 @@ def build_recommendations_response(
             entry["article_url"] = article_url
             entry["snippet"] = snippet
         else:
-            youtube_url = r.get("youtube_url")
             seg = r.get("_best_segment")
             if seg:
                 start_sec = seg.get("start_sec", 0.0)
@@ -372,7 +376,6 @@ def build_recommendations_response(
                 hint = f"該單元在 {start_str} 有提到：「{seg_text[:30]}...」"
             else:
                 hint = "字幕裡沒有特別命中關鍵句，可以從頭開始看。"
-
             entry["youtube_url"] = youtube_url
             entry["hint"] = hint
 
@@ -386,9 +389,10 @@ def build_recommendations_response(
         "article_count": article_count,
         "offset": offset,
         "limit": limit,
-        "has_more": has_more,
+        "has_more": offset + limit < total,
         "results": items
     }
+
 
 
 def load_xin_points() -> List[Dict[str, Any]]:
@@ -661,14 +665,17 @@ def get_base_key(section_title: str, title: str) -> str:
     return f"{s}||{t2}"
 
 def reorder_episode_pairs(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    group = {}
+    # 建索引：每個 base_key 的上/下（若同一組出現多筆，保留分數較高者）
+    group: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for r in results:
         key = get_base_key(r.get("section_title"), r.get("title"))
         tag = get_episode_tag(r.get("title") or "")
         if tag in ("上", "下"):
-            group.setdefault(key, {})[tag] = r
+            g = group.setdefault(key, {})
+            if tag not in g or (r.get("_score", 0) > g[tag].get("_score", 0)):
+                g[tag] = r
 
-    out = []
+    out: List[Dict[str, Any]] = []
     seen = set()
 
     for r in results:
@@ -679,14 +686,12 @@ def reorder_episode_pairs(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
         key = get_base_key(r.get("section_title"), r.get("title"))
         tag = get_episode_tag(r.get("title") or "")
 
+        # 遇到下篇 → 若上篇也在 results（代表符合，只是分數較低/位置較後）→ 插到下篇前
         if tag == "下":
             up = group.get(key, {}).get("上")
-
             if up is None:
-                # ✅ 只有下篇，上篇不在候選 results → 判定不符合/被刷掉 → 不處理
                 print("[pair] 只有下篇，上篇不在 results（判定：不符合/被刷掉）:", r.get("title"))
             else:
-                # ✅ 上篇存在於候選 results → 判定分數較低 → 插到下篇前面
                 print("[pair] 下篇命中，上篇存在（判定：分數較低，將上篇插前）:", up.get("title"), "->", r.get("title"))
                 up_id = id(up)
                 if up_id not in seen:
@@ -861,8 +866,8 @@ def chat(req: ChatRequest):
             resp = build_special_intent_response(special_intent, q)
         else:
             # 4) 其他情況：當作課程 / 文章推薦查詢
-            results = search_units(UNITS_CACHE, q, top_k=TOP_K)
-            resp = build_recommendations_response(q, results)
+            full_results = search_units(UNITS_CACHE, q, top_k=9999)
+            resp = build_recommendations_response(q, full_results, offset=0, limit=TOP_K)
 
     # --- 記錄歷史：依 session_id 分開 ---
     history_list = HISTORY.setdefault(session_id, [])
