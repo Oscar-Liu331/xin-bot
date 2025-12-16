@@ -314,6 +314,11 @@ def build_nearby_points_response(address: str, results):
 
 def build_recommendations_response(query: str,results: List[Dict[str, Any]],offset: int = 0,limit: int = TOP_K):
 
+    results = reorder_episode_pairs(results)
+
+    total = len(results)
+    page = results[offset: offset + limit]
+
     video_count = sum(1 for r in results if not r.get("is_article"))
     article_count = sum(1 for r in results if r.get("is_article"))
     total = len(results)
@@ -626,6 +631,72 @@ def score_unit(unit, query_terms, core_terms):
     )
 
     return final_score, best_seg
+
+EP_RE = re.compile(r"(（上）|（下）|\(上\)|\(下\)|上篇|下篇|上集|下集|上|下)$")
+
+def get_episode_tag(title: str) -> Optional[str]:
+    """回傳 '上' / '下' / None"""
+    if not title:
+        return None
+    t = title.strip()
+    if t.endswith(("（上）", "(上)", "上篇", "上集", "上")):
+        return "上"
+    if t.endswith(("（下）", "(下)", "下篇", "下集", "下")):
+        return "下"
+    return None
+
+def get_base_key(section_title: str, title: str) -> str:
+    """
+    用來把「上/下」視為同一組的 key
+    你可以用 section_title + title 去掉尾巴「上/下」來當 key
+    """
+    s = (section_title or "").strip()
+    t = (title or "").strip()
+    # 去掉尾巴的（上）（下）…等
+    t2 = EP_RE.sub("", t).strip()
+    return f"{s}||{t2}"
+
+def reorder_episode_pairs(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    規則：
+    - 如果某個 base_key 出現「下」但沒有「上」
+    - 且「上」其實存在於 results 內（代表符合、只是分數低）
+    => 把「上」插到「下」前面
+    """
+    # 先建索引：每一組 base_key 的上/下最佳候選
+    group = {}
+    for r in results:
+        key = get_base_key(r.get("section_title"), r.get("title"))
+        tag = get_episode_tag(r.get("title") or "")
+        if tag in ("上", "下"):
+            group.setdefault(key, {})[tag] = r
+
+    # 再依原排序走一遍，遇到「下」就補「上」
+    out = []
+    seen = set()
+    for r in results:
+        rid = id(r)
+        if rid in seen:
+            continue
+
+        key = get_base_key(r.get("section_title"), r.get("title"))
+        tag = get_episode_tag(r.get("title") or "")
+
+        if tag == "下":
+            up = group.get(key, {}).get("上")
+            if up is not None:
+                print("[pair] 只有下篇，上篇不在 results（判定：不符合/被刷掉）:", r.get("title"))
+                up_id = id(up)
+                if up_id not in seen:
+                    out.append(up)
+                    seen.add(up_id)                
+            else:
+                print("[pair] 下篇命中，上篇存在（判定：分數較低，將上篇插前）:", up.get("title"), "->", r.get("title"))
+
+        out.append(r)
+        seen.add(rid)
+
+    return out
 
 def format_time(seconds: float) -> str:
     s = int(seconds)
