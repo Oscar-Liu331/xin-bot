@@ -829,27 +829,31 @@ def chat(req: ChatRequest):
             return "video"
         return None
 
-    # ✨ 1. 先偵測媒體偏好
+    # 1. 偵測媒體偏好
     media_pref_check = detect_media_preference(q)
 
-    # ✨ 2. [修正重點] 建立一個「檢查用」的字串，把那些功能性指令拿掉
-    # 這樣才能正確判斷：使用者是「單純想切換模式」還是「輸入了新的關鍵字 + 指定模式」
-    q_for_check = q
+    # 2. 建立「清洗後」的字串，用來判斷是否包含新的關鍵字
+    q_cleaned = q
     if media_pref_check == "article":
-        # 把能觸發文章偏好的詞都清掉 (包含單詞 "文章" 以防萬一)
         for w in ["想看文章", "給我文章", "只有文章", "文章推薦", "找文章", "只想看文章", "文章"]:
-            q_for_check = q_for_check.replace(w, "")
+            q_cleaned = q_cleaned.replace(w, "")
     elif media_pref_check == "video":
         for w in ["想看影片", "給我影片", "播放影片", "影音", "看影片", "youtube", "只想看影片", "影片"]:
-            q_for_check = q_for_check.replace(w, "")
+            q_cleaned = q_cleaned.replace(w, "")
     
-    # ✨ 3. 使用「清洗過」的字串來判斷有沒有核心關鍵字
-    # 如果 q="給我文章"，q_for_check就會變成 ""，user_core 就會是 [] -> 正確觸發切換邏輯
-    # 如果 q="焦慮文章"，q_for_check就會變成 "焦慮"，user_core 就會是 ["焦慮"] -> 正確觸發搜尋邏輯
-    user_core, _ = normalize_query(q_for_check)
+    q_cleaned = q_cleaned.strip()
+    
+    # 3. 嘗試解析核心詞（使用清洗後的字串）
+    user_core, _ = normalize_query(q_cleaned)
+    
+    # 如果清洗後還有剩餘文字（且長度夠），但 normalize 沒抓到（例如"失眠"不在關鍵字表），強迫將其視為新主題
+    if not user_core and len(q_cleaned) >= 2:
+        user_core = [q_cleaned]
 
 
-    # 1. 處理「心據點」/「看診」地址搜尋邏輯
+    # --- 進入判斷流程 ---
+
+    # A. 處理「心據點」/「看診」地址搜尋邏輯
     if ("附近" in q) and ("心據點" in q or "看診" in q or "門診" in q):
         addr = extract_address_from_query(q)
         if not addr:
@@ -869,7 +873,7 @@ def chat(req: ChatRequest):
                 results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
                 resp = build_nearby_points_response(addr, results)
 
-    # 2. 直接輸入完整地址
+    # B. 直接輸入完整地址
     elif ADDR_HEAD_RE.match(q):
         addr = q
         geo = geocode_address(addr)
@@ -883,7 +887,7 @@ def chat(req: ChatRequest):
             results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
             resp = build_nearby_points_response(addr, results)
 
-    # 3. 處理「下一頁」分頁邏輯
+    # C. 處理「下一頁」分頁邏輯
     elif detect_pagination_intent(q):
         history = HISTORY.get(session_id, [])
         last = next(
@@ -894,7 +898,8 @@ def chat(req: ChatRequest):
             resp = {"type": "text", "message": "目前沒有上一筆推薦結果，可以先問一個問題 😊"}
         else:
             prev_resp = last["response"]
-            prev_query = prev_resp.get("query_raw", prev_resp.get("query"))
+            # 優先使用 query_raw，若無則用 query
+            prev_query = prev_resp.get("query_raw") or prev_resp.get("query")
             prev_filter = prev_resp.get("filter_type", None)
 
             new_offset = prev_resp["offset"] + prev_resp["limit"]
@@ -909,9 +914,9 @@ def chat(req: ChatRequest):
             resp["filter_type"] = prev_filter
             resp["query_raw"] = prev_query
 
-    # ▼▼▼ 4. 處理「純粹的媒體切換指令」（類似分頁邏輯） ▼▼▼
-    # 邏輯：如果有指定媒體 (如 "給我文章") 且 沒有新的關鍵字 (user_core 為空)
-    elif media_pref_check and not user_core:
+    # D. 【修正重點】處理「純粹的媒體切換指令」
+    # 條件：有指定媒體 (例如"文章") 且 清洗後的字串是空的 (代表沒有輸入新主題)
+    elif media_pref_check and not q_cleaned:
         history = HISTORY.get(session_id, [])
         # 抓取上一筆推薦紀錄
         last = next(
@@ -920,21 +925,19 @@ def chat(req: ChatRequest):
         )
 
         if not last:
-            # 沒有歷史紀錄，只能當作一般搜尋（但沒有關鍵字可能會沒結果）
             resp = {
                 "type": "course_recommendation", "query": q, "total": 0, "video_count": 0, "article_count": 0,
                 "offset": 0, "limit": TOP_K, "has_more": False, "results": [],
                 "message": "這看起來像是想要篩選文章或影片，但我還不知道你想找什麼主題。請先輸入一個主題，例如「焦慮」或「失眠」。"
             }
         else:
-            # 有歷史紀錄，進行繼承與篩選
             prev_resp = last["response"]
-            # 拿到最原始的搜尋主題 (例如 "焦慮")
+            # 這裡很重要：一定要抓到上一筆的「原始主題」(例如: 失眠)
             original_topic = prev_resp.get("query_raw") or prev_resp.get("query")
             
             print(f"[chat] 觸發篩選切換: 主題='{original_topic}' -> 類型='{media_pref_check}'")
 
-            # 重新搜尋該主題的完整清單
+            # 重新搜尋該主題
             full_results = search_units(UNITS_CACHE, original_topic, top_k=9999)
 
             # 強制套用新的過濾條件
@@ -943,32 +946,31 @@ def chat(req: ChatRequest):
             elif media_pref_check == "video":
                 full_results = [r for r in full_results if not r.get("is_article")]
 
-            # 回傳第一頁 (offset=0)
             resp = build_recommendations_response(original_topic, full_results, offset=0, limit=TOP_K)
             
-            # 重要：更新狀態，這樣下次按「下一頁」才會對
+            # 更新狀態
             resp["filter_type"] = media_pref_check
-            resp["query_raw"] = original_topic
+            resp["query_raw"] = original_topic # 確保傳承原始主題
 
-            # 如果篩選後是空的，給個提示
             if not resp["results"]:
                 type_name = "文章" if media_pref_check == "article" else "影片"
                 resp["message"] = f"關於「{original_topic}」目前沒有相關的{type_name}內容。"
-    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
-    # 5. 特定情境建議與一般搜尋 (這裡就是全新的搜尋了)
+    # E. 特定情境建議 與 一般搜尋
     else:
         special_intent = detect_special_intent(q)
         if special_intent:
             resp = build_special_intent_response(special_intent, q)
         else:
-            # 這是一次全新的搜尋（例如輸入「憂鬱文章」）
-            search_q = q
+            # 這是一次全新的搜尋（例如輸入「失眠」，或是「失眠文章」）
+            # 如果 q_cleaned 有東西，就用 q_cleaned (去除"文章"後的純主題)，否則用原字串
+            search_q = q_cleaned if q_cleaned else q
             
-            # 執行搜尋
+            print(f"[chat] 執行新搜尋: '{search_q}'")
+            
             full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
             
-            # 如果這句話本身就包含篩選意圖 (例如 "憂鬱文章")
+            # 如果這句話本身就包含篩選意圖 (例如 "失眠文章")
             final_filter = None
             if media_pref_check == "article":
                 full_results = [r for r in full_results if r.get("is_article")]
@@ -979,7 +981,7 @@ def chat(req: ChatRequest):
             
             resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
             
-            # 記錄狀態
+            # 【關鍵修正】確保這裡寫入 query_raw
             resp["filter_type"] = final_filter
             resp["query_raw"] = search_q 
 
@@ -989,12 +991,13 @@ def chat(req: ChatRequest):
 
     # --- 記錄歷史紀錄 ---
     history_list = HISTORY.setdefault(session_id, [])
+    # 這裡的 append 會把 resp (包含正確的 query_raw) 存進去
     history_list.append({"query": q, "response": resp})
+    
     if len(history_list) > 50:
         history_list.pop(0)
 
     return resp
-
 
 @app.get("/history")
 def get_history(session_id: str):
