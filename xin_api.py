@@ -31,83 +31,78 @@ TOP_K = 5
 XIN_POINTS_FILE = Path("xin_points.json")
 UNITS_FILE = Path("wellbeing_elearn_pro_all_with_articles.json")
 
-MENTAL_KEYWORDS = [
-    "憂鬱", "情緒低落", "心情不好", "心情低落",
-    "心情",      
-    "低落",      
-    "難過",     
-    "沮喪", "沒動力",
-    "焦慮", "緊張", "恐慌", "壓力", "職場壓力", "睡不著", "失眠",
-    "孤單", "寂寞",
-    "婆媳", "婆婆", "公婆", "家庭衝突", "家庭關係",
-    "夫妻", "婚姻", "親子衝突", "親子關係",
+# --- 關鍵字載入邏輯 ---
+KEYWORDS_FILE = Path("keywords.json")
+# --- 全域變數 ---
+KEYWORDS_DATA = {} # 存放原始分類結構
+MENTAL_KEYWORDS = [] # 扁平化後的清單，供原搜尋邏輯使用
+STOP_WORDS = []
 
-    "小孩", "孩子", "幼兒", "青少年",
-    "教養", "親子", "親子衝突", "親子關係",
-    "吵架", "頂嘴", "哭鬧", "情緒失控", "脾氣",
-    
-    "繪本","故事",
-    "長輩過世",
-]
+def load_keywords_from_json():
+    global KEYWORDS_DATA, MENTAL_KEYWORDS, STOP_WORDS
+    try:
+        if KEYWORDS_FILE.exists():
+            with open(KEYWORDS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                KEYWORDS_DATA = data.get("mental_keywords", {})
+                
+                # 將所有分類的關鍵字攤平成一個清單，相容舊有的搜尋邏輯
+                all_kws = []
+                for category_list in KEYWORDS_DATA.values():
+                    all_kws.extend(category_list)
+                
+                # 去除重複項
+                MENTAL_KEYWORDS = list(set(all_kws))
+                STOP_WORDS = data.get("stop_words", [])
+                
+            print(f"[load] ✅ 分類載入成功。共 {len(KEYWORDS_DATA)} 個類別，{len(MENTAL_KEYWORDS)} 個關鍵字。")
+    except Exception as e:
+        print(f"[load] ❌ 分類載入失敗: {e}")
 
-STOP_WORDS = [
-    "我", "你", "他", "她", "它", "我們", "你們", "他們",
-    "最近", "一直", "覺得", "有點", "有一點",
-    "如果", "好像", "是不是",
-    "該怎麼辦", "怎麼辦", "怎麼做", "該怎麼做",
-    "可以", "覺得", "自己",
-    "的", "了", "呢", "嗎", "吧"
-]
+# 初始載入
+load_keywords_from_json()
 
 def detect_pagination_intent(q: str) -> bool:
     return any(w in q for w in ["給我後五個","給我下五個","後五個","下五個","下一頁","更多推薦"])
 
+def check_category_intent(text: str, category_name: str) -> bool:
+    """工具函式：檢查文字中是否包含特定分類的關鍵字"""
+    keywords = KEYWORDS_DATA.get(category_name, [])
+    return any(kw in text for kw in keywords)
+
 def detect_special_intent(q: str) -> Optional[str]:
     """
-    偵測是不是屬於「要直接給建議」的幾種常見問題：
-      - 憂鬱要不要看醫師
-      - 擔心家人失智，看哪一科
-      - 小學生手機玩太多
-      - 婆婆帶小孩教養衝突
-    回傳 intent 名稱，沒命中就回傳 None。
+    精確偵測四大特定問題，使用細分後的 JSON 類別
     """
-    # 去掉空白符號
-    text = re.sub(r"\s+", "", q)
-    print(f"[intent-debug] raw='{q}' text='{text}'")
+    text = re.sub(r"\s+", "", q).lower()
+    
+    def has_cat(category_name):
+        return any(kw in text for kw in KEYWORDS_DATA.get(category_name, []))
 
-    # ---------- 1) 我覺得有點憂鬱，要不要看醫師？ ----------
-    has_depression_word = any(w in text for w in ["憂鬱", "心情低落", "心情不好", "情緒低落"])
-    # 只要有「看」+（醫師/醫生/心理/身心科/精神科）就視為問就醫
-    has_see_doctor = (
-        "看" in text and (
-            "醫師" in text or "醫生" in text or "心理師" in text or
-            "心理醫師" in text or "身心科" in text or "精神科" in text
-        )
-    )
-    # 額外加一些常見語氣
-    has_doubt_phrase = any(w in text for w in ["要不要", "該不該", "需不需要", "要不要去"])
+    # ---------- 1. 憂鬱就醫建議 ----------
+    # 邏輯：(憂鬱類 或 動力類) + (就醫關鍵字 或 疑問句)
+    if has_cat("depressive_mood") or has_cat("low_motivation"):
+        if any(w in text for w in ["醫師", "醫生", "心理師", "身心科", "該不該", "要不要", "看診"]):
+            return "depression_go_doctor"
 
-    if has_depression_word and (has_see_doctor or has_doubt_phrase):
-        return "depression_go_doctor"
+    # ---------- 2. 長輩失智確認與看診 ----------
+    # 邏輯：直接命中「失智」 + (長輩類 或 詢問科別/確認)
+    if "失智" in text:
+        if has_cat("family_elder") or any(w in text for w in ["哪一科", "確定", "檢查", "診斷"]):
+            return "dementia_parent"
 
-    # ---------- 2) 擔心爸爸 / 長輩失智，看哪一科？ ----------
-    if "失智" in text and any(w in text for w in ["爸爸", "媽媽", "父親", "母親", "長輩", "家人", "阿公", "阿嬤"]):
-        return "dementia_parent"
-
-    # ---------- 3) 國小小孩手機玩太兇，怎麼辦？ ----------
-    has_device = any(w in text for w in ["手機", "平板", "遊戲", "電動", "線上遊戲"])
-    has_child = any(w in text for w in ["國小", "小學", "小孩", "孩子", "兒子", "女兒", "國三", "國二", "國一"])
-    if has_device and has_child:
+    # ---------- 3. 孩子手機問題 ----------
+    # 邏輯：(孩子類) + (數位成癮類)
+    if has_cat("child_teen") and has_cat("digital_addiction"):
         return "child_phone"
 
-    # ---------- 4) 婆婆照顧小孩方式和我很不一樣 ----------
-    has_inlaw = any(w in text for w in ["婆婆", "公婆", "婆家"])
-    has_childcare = any(w in text for w in ["小孩", "孩子", "顧小孩", "帶小孩", "照顧", "教養"])
-    if has_inlaw and has_childcare:
-        return "mother_in_law_childcare"
+    # ---------- 4. 婆婆教養觀念衝突 ----------
+    # 邏輯：(婆媳類) + (教養衝突類 或 照顧行為)
+    if has_cat("in_laws"):
+        if has_cat("parenting_conflict") or any(w in text for w in ["照顧", "很不一樣", "差異"]):
+            return "mother_in_law_childcare"
 
     return None
-
 
 def build_special_intent_response(intent: str, q: str) -> Dict[str, Any]:
     """
@@ -564,30 +559,30 @@ def normalize_query(q: str) -> List[str]:
         return []
 
     terms: List[str] = []
+    
+    # --- [核心修改] 分類擴展邏輯 ---
+    # 檢查使用者的輸入是否包含任何分類中的關鍵字
+    expanded_categories = []
+    for category, kws in KEYWORDS_DATA.items():
+        if any(kw in q for kw in kws):
+            expanded_categories.append(category)
+            # 將該分類的所有詞加入搜尋關鍵字中
+            for kw in kws:
+                if kw not in terms:
+                    terms.append(kw)
+    
+    if expanded_categories:
+        print(f"[search-debug] 命中分類 {expanded_categories}，擴展關鍵字至 {len(terms)} 個")
+    # -----------------------------
 
-    for kw in MENTAL_KEYWORDS:
-        if kw in q and kw not in terms:
-            terms.append(kw)
-
+    # 原有的斷詞與清理邏輯 (保留以處理非分類詞)
     parts = re.split(r"[，。！!？?\s、；;:：]+", q)
     for part in parts:
         part = part.strip()
         if not part or part in STOP_WORDS:
             continue
-
-        if re.fullmatch(r"[\u4e00-\u9fff]+", part):
-            n = len(part)
-            for size in range(2, min(4, n) + 1):
-                for i in range(0, n - size + 1):
-                    gram = part[i:i+size]
-                    if gram not in STOP_WORDS and gram not in terms:
-                        terms.append(gram)
-        else:
-            if len(part) >= 2 and part not in terms and part not in STOP_WORDS:
-                terms.append(part)
-
-    if not terms:
-        terms = [q]
+        if part not in terms:
+            terms.append(part)
 
     return terms
 
@@ -597,46 +592,32 @@ def score_unit(unit, query_terms, core_terms):
         return 0.0, None
 
     title = (unit.get("section_title") or "") + (unit.get("title") or "")
-    subtitles = unit.get("subtitles", [])
-
-    title_core = any(c in title for c in core_terms)
-
-    subtitle_core = False
-    for seg in subtitles:
-        seg_text = seg.get("text", "") or ""
-        if any(c in seg_text for c in core_terms):
-            subtitle_core = True
-            break
-
-    if not (title_core or subtitle_core):
+    
+    # 計算命中了多少個「不同」的關鍵字
+    unique_hits = [t for t in query_terms if t in text]
+    hit_count = len(unique_hits)
+    
+    if hit_count == 0:
         return 0.0, None
 
-    total_hits = sum(text.count(term) for term in query_terms)
-    if total_hits < 3:
-        return 0.0, None
+    # 基礎分：命中的不同詞越多，基礎分越高
+    base_score = hit_count * 10 
+    
+    # 標題加成：標題有命中任何一個詞，大幅加分
+    title_hit = any(t in title for t in query_terms)
+    title_bonus = 50 if title_hit else 0
 
-    total_core_hits = sum(text.count(c) for c in core_terms)
-
-    if not title_core and total_core_hits < 3:
-        return 0.0, None
-
+    # 字幕集中度加成 (保留原有邏輯)
     best_seg = None
     best_seg_score = 0
-    for seg in subtitles:
-        seg_text = seg.get("text", "") or ""
-        seg_score = sum(seg_text.count(t) for t in query_terms)
+    for seg in unit.get("subtitles", []):
+        seg_text = seg.get("text", "")
+        seg_score = sum(1 for t in query_terms if t in seg_text)
         if seg_score > best_seg_score:
             best_seg_score = seg_score
             best_seg = seg
 
-    title_core_hits = sum(1 for c in core_terms if c in title)
-
-    final_score = (
-        total_core_hits * 4 +      # 核心詞在全文出現越多，越相關
-        title_core_hits * 6 +      # 標題有核心詞，加大權重
-        total_hits * 1 +           # 其他詞也略加分
-        best_seg_score * 2         # 有一段字幕特別集中，也加分
-    )
+    final_score = base_score + title_bonus + (best_seg_score * 5)
 
     return final_score, best_seg
 
@@ -795,6 +776,16 @@ class NearbyRequest(BaseModel):
 class RecommendRequest(BaseModel):
     query: str
 
+
+@app.get("/reload_keywords")
+def reload_keywords():
+    """手動觸發重新載入關鍵字設定"""
+    load_keywords_from_json()
+    return {
+        "status": "success", 
+        "mental_keywords_count": len(MENTAL_KEYWORDS),
+        "stop_words_count": len(STOP_WORDS)
+    }
 
 @app.get("/ping")
 def ping():
