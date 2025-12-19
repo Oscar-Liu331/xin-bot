@@ -878,32 +878,36 @@ def chat(req: ChatRequest):
             # --- A. 偵測媒體偏好 ---
             media_pref = detect_media_preference(q)
             
-            # --- B. 延續上文邏輯 ---
-            # 如果使用者只輸入「我想看文章」，裡面沒關鍵字，就去抓歷史紀錄的主題
-            search_q = q
+            # --- B. 決定搜尋關鍵字 (上下文銜接) ---
             user_core, _ = normalize_query(q)
+            search_q = q
             
+            # 如果沒有核心詞但有媒體偏好，強制抓取上一筆主題
             if not user_core and media_pref:
                 history = HISTORY.get(session_id, [])
                 last_rec = next((h for h in reversed(history) if h["response"].get("type") == "course_recommendation"), None)
                 if last_rec:
-                    search_q = last_rec["query"]
-                    print(f"[chat] 延續上文主題: {search_q}")
+                    # 這邊是關鍵：把 search_q 替換成上次的主題（如：焦慮）
+                    search_q = last_rec["response"].get("query") 
+                    print(f"[chat] 檢測到媒體切換意圖，延續主題: {search_q}")
 
-            # --- C. 執行搜尋與過濾 ---
+            # --- C. 執行搜尋 (此時 search_q 已經是「焦慮」了) ---
             full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
             
+            # --- D. 執行媒體過濾 ---
             if media_pref == "article":
                 full_results = [r for r in full_results if r.get("is_article")]
             elif media_pref == "video":
                 full_results = [r for r in full_results if not r.get("is_article")]
             
+            # --- E. 建立回應 ---
+            # 這裡傳入 search_q，讓回應標題顯示為「關於『焦慮』的結果」
             resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
             
-            # 如果搜尋結果為空且有媒體偏好，給予提示
+            # 補強：如果過濾後沒東西，給予明確提示
             if media_pref and not resp["results"]:
                 type_name = "文章" if media_pref == "article" else "影片"
-                resp["message"] = f"關於「{search_q}」目前沒有相關的{type_name}，建議您嘗試另一種媒體類型。"
+                resp["message"] = f"關於「{search_q}」目前沒有相關的{type_name}內容。
 
     # --- 記錄歷史紀錄 ---
     history_list = HISTORY.setdefault(session_id, [])
@@ -954,47 +958,41 @@ def nearby(req: NearbyRequest):
 @app.post("/recommend")
 def recommend(req: RecommendRequest):
     q = req.query.strip()
-    # 這裡必須與 /chat 使用相同的預設 ID，否則會找不到紀錄
+    # 確保與 chat 邏輯中的 session_id 命名一致 (預設 anonymous)
     sid = "anonymous" 
     
-    # 1. 偵測本次是否有「看文章」或「看影片」的偏好
+    # 1. 偵測媒體偏好 (文章/影片)
     pref = detect_media_preference(q)
     
-    # 2. 獲取本次的核心關鍵字
+    # 2. 獲取核心詞
     user_core, _ = normalize_query(q)
     
-    # 3. 【關鍵修正】從 /chat 存入的格式中正確抓取「上次的主題」
-    search_query = q
+    # 3. 上下文繼承：如果沒核心詞但有偏好，去翻 HISTORY
+    search_q = q
     if not user_core and pref:
-        history_items = HISTORY.get(sid, [])
-        # 我們要找的是 item["response"]["type"] == "course_recommendation"
-        last_rec_entry = next(
-            (item for item in reversed(history_items) 
-             if isinstance(item.get("response"), dict) and 
-                item["response"].get("type") == "course_recommendation"), 
-            None
-        )
-        
-        if last_rec_entry:
-            # 從當初搜尋的 response 裡抓回主題詞 (例如：焦慮)
-            search_query = last_rec_entry["response"].get("query")
-            print(f"[Recommend Context] 成功繼承上次主題: {search_query}")
+        history = HISTORY.get(sid, [])
+        # 這裡的 item["response"] 對應到 chat 存入的結構
+        last_rec = next((h for h in reversed(history) if h["response"].get("type") == "course_recommendation"), None)
+        if last_rec:
+            # 繼承前一次搜尋成功的主題詞
+            search_q = last_rec["response"].get("query")
+            print(f"[recommend] 繼承主題: {search_q}")
 
-    # 4. 執行搜尋
-    full_results = search_units(UNITS_CACHE, search_query, top_k=9999)
+    # 4. 執行搜尋 (用 search_q 以確保 search_units 能抓到 user_core)
+    full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
     
-    # 5. 根據偏好進行強制過濾
+    # 5. 媒體過濾
     if pref == "article":
         full_results = [r for r in full_results if r.get("is_article")]
     elif pref == "video":
         full_results = [r for r in full_results if not r.get("is_article")]
 
-    # 6. 建立回應 (注意：這裡 query 要傳 search_query，前端顯示才會正確)
-    resp = build_recommendations_response(search_query, full_results, offset=0, limit=TOP_K)
+    # 6. 建立回應
+    resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
     
-    # 7. 為了讓下一次搜尋也能延續，存回 HISTORY
-    if sid not in HISTORY: HISTORY[sid] = []
-    HISTORY[sid].append({"query": q, "response": resp})
+    # 7. 存回歷史 (格式統一為 {"query": ..., "response": ...})
+    history_list = HISTORY.setdefault(sid, [])
+    history_list.append({"query": q, "response": resp})
     
     return resp
 
