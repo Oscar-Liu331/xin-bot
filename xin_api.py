@@ -557,28 +557,36 @@ def normalize_query(q: str):
     q = q.strip().lower()
     if not q: return [], []
 
-    # --- 新增：定義功能性關鍵字（不列入搜尋權重計算） ---
-    media_commands = ["文章", "影片", "影片推薦", "文章推薦"]
+    # --- 1. 定義「功能性/指令類」詞彙，不應計入搜尋評分 ---
+    # 這些詞是用來表達意圖，而非主題內容，必須過濾掉
+    functional_words = [
+        "文章", "影片", "想看", "給我", "只有", "只想看", "推薦", 
+        "影音", "播放", "查詢", "找", "有哪些", "介紹"
+    ]
     
-    user_core_terms = []   # 使用者輸入的核心詞
-    expanded_terms = []    # 聯想詞
+    user_core_terms = []   # 使用者輸入的內容核心詞
+    expanded_terms = []    # 從 JSON 分類聯想出的詞
     
-    # --- 1. 偵測分類詞 ---
+    # --- 2. 偵測使用者輸入了哪些分類詞 (原邏輯保留) ---
     for category, kws in KEYWORDS_DATA.items():
         found_in_q = [kw for kw in kws if kw in q]
         if found_in_q:
             user_core_terms.extend(found_in_q)
             expanded_terms.extend(kws)
     
-    # --- 2. 處理其他詞彙並過濾功能性詞彙 ---
+    # --- 3. 處理剩餘詞彙並剔除功能性指令與停用詞 ---
+    # 這裡的 re.split 會根據標點符號與空格切分字串
     parts = re.split(r"[，。！!？?\s、；;:：]+", q)
     for part in parts:
-        # 增加判斷：長度 >= 2、不在停用詞中、且「不是媒體指令」
-        if len(part) >= 2 and part not in STOP_WORDS and part not in media_commands:
+        # 條件：長度大於等於 2、不在 stop_words 裡、且不是功能性指令詞
+        if (len(part) >= 2 and 
+            part not in STOP_WORDS and 
+            part not in functional_words):
+            
             if part not in user_core_terms:
                 user_core_terms.append(part)
 
-    # 去重
+    # 去重並確保聯想詞不包含已在核心詞裡的
     expanded_terms = list(set(expanded_terms) - set(user_core_terms))
     
     return user_core_terms, expanded_terms
