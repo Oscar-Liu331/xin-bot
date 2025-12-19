@@ -980,6 +980,7 @@ def chat(req: ChatRequest):
 
     return resp
 
+
 @app.get("/history")
 def get_history(session_id: str):
     """
