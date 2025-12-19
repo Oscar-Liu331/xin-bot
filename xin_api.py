@@ -558,7 +558,7 @@ def normalize_query(q: str):
     if not q: return [], []
 
     # --- 新增：定義功能性關鍵字（不列入搜尋權重計算） ---
-    media_commands = ["文章", "影片", "影片推薦", "文章推薦", "想看", "給我", "播放"]
+    media_commands = ["文章", "影片", "影片推薦", "文章推薦"]
     
     user_core_terms = []   # 使用者輸入的核心詞
     expanded_terms = []    # 聯想詞
