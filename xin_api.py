@@ -723,18 +723,22 @@ def format_time(seconds: float) -> str:
     return f"{m:02d}:{sec:02d}"
 
 def search_units(units: List[Dict[str, Any]], query: str, top_k: int = TOP_K):
+    # 1. 先用原本的邏輯解析關鍵字
     user_core, expanded = normalize_query(query)
     
-    # 修正：如果 query 裡沒核心詞，但 query 本身長度夠（可能是被繼承過來的詞），
-    # 我們強迫把 query 本身加入核心詞，避免回傳空陣列
-    if not user_core:
-        if len(query) >= 2:
-            user_core = [query]
-        else:
-            return []
+    # 2. 【核心修正】保底邏輯：
+    # 如果解析完 core 是空的，但傳進來的 query 本身長度夠（例如：焦慮）
+    # 就直接把 query 當作核心詞，不讓搜尋中斷
+    if not user_core and len(query) >= 2:
+        user_core = [query]
+
+    # 3. 如果連 query 都沒東西，才回傳空陣列
+    if not user_core: 
+        return []
 
     results = []
     for u in units:
+        # 使用強迫產生的 user_core 進行計分
         score, best_seg = score_unit(u, user_core, expanded)
         if score > 0:
             r = dict(u)
@@ -882,34 +886,30 @@ def chat(req: ChatRequest):
         if special_intent:
             resp = build_special_intent_response(special_intent, q)
         else:
-            # A. 偵測媒體偏好
             media_pref = detect_media_preference(q)
-            
-            # B. 上下文繼承：如果輸入「給我文章」導致核心詞為空，從歷史抓回「焦慮」
             user_core, _ = normalize_query(q)
             search_q = q
-            
+            force_core = None # 新增：用來強迫搜尋引擎認得主題
+
+            # 只有在沒核心詞且有偏好時，才去抓歷史
             if not user_core and media_pref:
                 history = HISTORY.get(session_id, [])
                 last_rec = next((h for h in reversed(history) if h["response"].get("type") == "course_recommendation"), None)
                 if last_rec:
-                    # 重要：繼承當初搜尋的核心主題 (如：焦慮)
                     search_q = last_rec["response"].get("query")
-                    print(f"[chat] 繼承主題進行搜尋: {search_q}")
+                    force_core = search_q # 強制將上次的主題設為核心詞
+                    print(f"[chat] 繼承主題: {search_q}")
 
-            # C. 執行搜尋
-            full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
+            # 執行搜尋，並傳入 force_core
+            full_results = search_units(UNITS_CACHE, search_q, force_core=force_core)
             
-            # D. 強制類型過濾
             if media_pref == "article":
                 full_results = [r for r in full_results if r.get("is_article")]
             elif media_pref == "video":
                 full_results = [r for r in full_results if not r.get("is_article")]
             
-            # E. 建立回應 (傳入 search_q)
             resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
             
-            # 修正原有的語法錯誤
             if media_pref and not resp["results"]:
                 type_name = "文章" if media_pref == "article" else "影片"
                 resp["message"] = f"關於「{search_q}」目前沒有相關的{type_name}內容。"
