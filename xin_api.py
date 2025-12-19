@@ -865,7 +865,7 @@ def chat(req: ChatRequest):
             results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
             resp = build_nearby_points_response(addr, results)
 
-    # 3. 處理「下一頁」分頁邏輯
+    # 3. 處理「下一頁」分頁邏輯 (微調：若有媒體偏好紀錄也要繼承)
     elif detect_pagination_intent(q):
         history = HISTORY.get(session_id, [])
         last = next(
@@ -875,10 +875,27 @@ def chat(req: ChatRequest):
         if not last:
             resp = {"type": "text", "message": "目前沒有上一筆推薦結果，可以先問一個問題 😊"}
         else:
-            prev = last["response"]
-            new_offset = prev["offset"] + prev["limit"]
-            full_results = search_units(UNITS_CACHE, prev["query"], top_k=9999)
-            resp = build_recommendations_response(prev["query"], full_results, offset=new_offset, limit=TOP_K)
+            prev_resp = last["response"]
+            # 繼承上一次的查詢詞
+            prev_query = prev_resp.get("query_raw", prev_resp.get("query")) 
+            # 繼承上一次的媒體偏好 (如果有)
+            prev_filter = prev_resp.get("filter_type", None) 
+
+            new_offset = prev_resp["offset"] + prev_resp["limit"]
+            
+            # 重新搜尋完整清單
+            full_results = search_units(UNITS_CACHE, prev_query, top_k=9999)
+            
+            # 再次套用過濾 (重要！不然下一頁會跑出別種類型)
+            if prev_filter == "article":
+                full_results = [r for r in full_results if r.get("is_article")]
+            elif prev_filter == "video":
+                full_results = [r for r in full_results if not r.get("is_article")]
+
+            resp = build_recommendations_response(prev_query, full_results, offset=new_offset, limit=TOP_K)
+            # 記錄下過濾狀態供下一次分頁使用
+            resp["filter_type"] = prev_filter
+            resp["query_raw"] = prev_query
 
     # 4. 特定情境建議與一般課程搜尋
     else:
@@ -886,17 +903,19 @@ def chat(req: ChatRequest):
         if special_intent:
             resp = build_special_intent_response(special_intent, q)
         else:
+            # --- 修改核心邏輯開始 ---
+            
             # 1. 偵測媒體偏好
             media_pref = detect_media_preference(q)
             user_core, _ = normalize_query(q)
             
             # 預設搜尋詞
             search_q = q
+            is_inheritance = False # 標記是否發生了繼承
             
-            # 2. 上下文繼承邏輯
+            # 2. 上下文繼承邏輯：如果使用者只說「給我文章」而沒有新關鍵字
             if not user_core and media_pref:
                 history = HISTORY.get(session_id, [])
-                print(f"[DEBUG] 歷史紀錄筆數: {len(history)}") # 檢查 session 有沒有對上
                 
                 # 尋找最近一筆課程推薦紀錄
                 last_rec = next((h for h in reversed(history) 
@@ -904,29 +923,41 @@ def chat(req: ChatRequest):
                                 and h["response"].get("type") == "course_recommendation"), None)
                 
                 if last_rec:
-                    # 從 response 結構中抓取當初搜尋的主題詞
-                    search_q = last_rec["response"].get("query")
-                    print(f"[DEBUG] 成功繼承主題: {search_q}")
+                    # 重要：優先抓取 raw query (最原始的主題)，避免抓到被過濾後的詞
+                    prev_resp = last_rec["response"]
+                    search_q = prev_resp.get("query_raw") or prev_resp.get("query")
+                    is_inheritance = True
+                    print(f"[chat] 繼承上一輪主題: {search_q}, 新增過濾: {media_pref}")
                 else:
-                    print(f"[DEBUG] 找不到上一筆推薦紀錄，搜尋詞維持: {search_q}")
+                    print(f"[chat] 找不到上一筆推薦紀錄，搜尋詞維持: {search_q}")
 
-            # 3. 執行搜尋 (此處 search_q 必須是「焦慮」)
-            print(f"[DEBUG] 最終搜尋詞: {search_q}")
+            # 3. 執行搜尋
+            # 如果是繼承模式，search_q 已經是舊主題 (如"焦慮")；如果不是，search_q 就是新輸入 (如"憂鬱影片")
+            # 這裡要注意 search_units 內部會再次 normalize，所以傳入 "焦慮" 是安全的
             full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
             
             # 4. 媒體類型過濾
+            final_filter = None
             if media_pref == "article":
                 full_results = [r for r in full_results if r.get("is_article")]
+                final_filter = "article"
             elif media_pref == "video":
                 full_results = [r for r in full_results if not r.get("is_article")]
+                final_filter = "video"
             
             # 5. 建立回應
             resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
             
+            # 把關鍵資訊塞回 response，方便下一次分頁或切換類型時使用
+            resp["filter_type"] = final_filter
+            resp["query_raw"] = search_q 
+
             # 6. 補強提示
             if media_pref and not resp["results"]:
                 type_name = "文章" if media_pref == "article" else "影片"
                 resp["message"] = f"關於「{search_q}」目前沒有相關的{type_name}內容。"
+            
+            # --- 修改核心邏輯結束 ---
 
     # --- 記錄歷史紀錄 ---
     history_list = HISTORY.setdefault(session_id, [])
