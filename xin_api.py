@@ -954,8 +954,7 @@ def nearby(req: NearbyRequest):
 @app.post("/recommend")
 def recommend(req: RecommendRequest):
     q = req.query.strip()
-    # 這裡必須與前端傳入 /chat 時使用的 session_id 一致
-    # 如果前端沒傳，通常預設是 "anonymous"
+    # 這裡必須與 /chat 使用相同的預設 ID，否則會找不到紀錄
     sid = "anonymous" 
     
     # 1. 偵測本次是否有「看文章」或「看影片」的偏好
@@ -964,12 +963,11 @@ def recommend(req: RecommendRequest):
     # 2. 獲取本次的核心關鍵字
     user_core, _ = normalize_query(q)
     
-    # 3. 【修正核心邏輯】從 /chat 的歷史格式中抓取主題
+    # 3. 【關鍵修正】從 /chat 存入的格式中正確抓取「上次的主題」
     search_query = q
     if not user_core and pref:
         history_items = HISTORY.get(sid, [])
-        # 注意：/chat 存入的格式是 {"query": "...", "response": {...}}
-        # 我們要找的是 response 類型為 course_recommendation 的那一筆
+        # 我們要找的是 item["response"]["type"] == "course_recommendation"
         last_rec_entry = next(
             (item for item in reversed(history_items) 
              if isinstance(item.get("response"), dict) and 
@@ -978,9 +976,9 @@ def recommend(req: RecommendRequest):
         )
         
         if last_rec_entry:
-            # 抓取當時搜尋的主題詞 (例如：焦慮)
+            # 從當初搜尋的 response 裡抓回主題詞 (例如：焦慮)
             search_query = last_rec_entry["response"].get("query")
-            print(f"[Recommend Context] 繼承上次主題: {search_query}")
+            print(f"[Recommend Context] 成功繼承上次主題: {search_query}")
 
     # 4. 執行搜尋
     full_results = search_units(UNITS_CACHE, search_query, top_k=9999)
@@ -991,10 +989,10 @@ def recommend(req: RecommendRequest):
     elif pref == "video":
         full_results = [r for r in full_results if not r.get("is_article")]
 
-    # 6. 建立回應
+    # 6. 建立回應 (注意：這裡 query 要傳 search_query，前端顯示才會正確)
     resp = build_recommendations_response(search_query, full_results, offset=0, limit=TOP_K)
     
-    # 7. 保持紀錄格式一致，存回 HISTORY
+    # 7. 為了讓下一次搜尋也能延續，存回 HISTORY
     if sid not in HISTORY: HISTORY[sid] = []
     HISTORY[sid].append({"query": q, "response": resp})
     
