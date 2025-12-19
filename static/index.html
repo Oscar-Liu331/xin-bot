@@ -222,8 +222,7 @@
     </div>
 
     <div id="chatMessages" class="chat-messages">
-      <!-- 歷史訊息 / 新訊息都會塞在這 -->
-    </div>
+      </div>
 
     <div class="chat-input-area">
       <div class="chat-input-box">
@@ -250,8 +249,7 @@
     // 如果 HTML 不是跟 API 同網域，這邊可以改成 'http://localhost:8000'
     const API_BASE = '';
 
-
-    // ==== 新增：建立 / 取得使用者專屬 session_id ====
+    // ==== 建立 / 取得使用者專屬 session_id ====
     let SESSION_ID = localStorage.getItem('xin_session_id');
 
     if (!SESSION_ID) {
@@ -288,7 +286,7 @@
       bubble.classList.add('message-bubble');
 
       if (asHtml) {
-        bubble.innerHTML = text;   // ✅ 讓 <a> 生效
+        bubble.innerHTML = text;   // ✅ 讓 HTML 生效 (包含分數樣式、連結)
       } else {
         bubble.textContent = text; // ✅ 原本純文字
       }
@@ -313,7 +311,7 @@
     }
 
 
-    // 把 API 回傳的 JSON 轉成聊天框裡的文字
+    // 把 API 回傳的 JSON 轉成聊天框裡的文字 (HTML)
     function formatApiResponse(resp) {
       if (!resp || typeof resp !== 'object') {
         return '（系統沒有回傳可顯示的資訊）';
@@ -369,7 +367,7 @@
         return lines.join('\n');
       }
 
-      // ③ 課程 / 文章推薦
+      // ③ 課程 / 文章推薦 (在這裡加入分數顯示)
       if (resp.type === 'course_recommendation') {
         const lines = [];
         const results = resp.results || [];
@@ -381,7 +379,6 @@
 
         if (results.length === 0) {
           lines.push(resp.message || '目前找不到很符合的課程，可以換個關鍵字再試試。');
-          // ✅ 回傳 HTML（把換行轉 br）
           return lines.join('\n').replace(/\n/g, '<br>');
         }
 
@@ -391,20 +388,25 @@
           const sec = item.section_title || '';
           const title = item.title || '(無標題)';
           const kind = item.type === 'article' ? '文章' : '影片';
+          
+          // ✨✨✨ 新增：分數顯示邏輯 ✨✨✨
+          let scoreHtml = '';
+          if (item.score !== undefined) {
+             // 格式：紅字粗體顯示 (★分數)
+             scoreHtml = ` <span style="color: #e53e3e; font-weight: bold; font-size: 0.9em;">(★${Number(item.score).toFixed(1)})</span>`;
+          }
 
-          // ✅ 標題前面加【影片】/【文章】
           lines.push('');
-          lines.push(`${idx + 1}. 【${kind}】${sec ? '【' + sec + '】' : ''}${title}`);
+          // 在標題後方插入 scoreHtml
+          lines.push(`${idx + 1}. 【${kind}】${sec ? '【' + sec + '】' : ''}${title}${scoreHtml}`);
 
           if (item.type === 'video') {
             if (item.youtube_url) {
-              // ✅ 超連結
               lines.push(`   🎥 影片連結：<a href="${item.youtube_url}" target="_blank" rel="noopener noreferrer">${item.youtube_url}</a>`);
             }
             if (item.hint) lines.push(`   💡 小提醒：${item.hint}`);
           } else if (item.type === 'article') {
             if (item.article_url) {
-              // ✅ 超連結
               lines.push(`   📄 文章連結：<a href="${item.article_url}" target="_blank" rel="noopener noreferrer">${item.article_url}</a>`);
             }
             if (item.snippet) lines.push(`   🧾 節錄：${item.snippet}`);
@@ -434,7 +436,7 @@
         },
         body: JSON.stringify({
           query,
-          session_id: SESSION_ID, // 🔸帶上 session_id
+          session_id: SESSION_ID, 
         }),
       });
 
@@ -447,7 +449,8 @@
 
     async function loadHistory() {
       try {
-        const res = await fetch(`${API_BASE}/history`);
+        // ✨✨✨ 修正：帶上 session_id 才能抓對紀錄 ✨✨✨
+        const res = await fetch(`${API_BASE}/history?session_id=${SESSION_ID}`);
         if (!res.ok) {
           console.warn('載入歷史失敗：', res.status);
           return;
@@ -462,7 +465,7 @@
           }
           if (item.response) {
             const botHtml = formatApiResponse(item.response);
-            appendMessage('bot', botHtml, true); // ✅ 第三個參數 true
+            appendMessage('bot', botHtml, true); 
           }
         }
       } catch (err) {
