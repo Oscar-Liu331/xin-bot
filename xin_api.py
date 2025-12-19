@@ -870,7 +870,25 @@ def nearby(req: NearbyRequest):
 @app.post("/recommend")
 def recommend(req: RecommendRequest):
     q = req.query.strip()
+    
+    # 1. 偵測使用者是否指定看「文章」或「影片」
+    preference = detect_media_preference(q)
+    
+    # 2. 如果 query 只有指令（如「給我文章」），
+    # 則需要保留前一次的搜尋主題（例如「焦慮」），或允許在沒關鍵字時列出該類型所有內容
+    user_core, expanded = normalize_query(q)
+    
+    # 修正：如果 user_core 為空但有明確偏好，我們可以從歷史紀錄抓回主題，
+    # 或者調整搜尋邏輯，讓它不要因為有「文章」二字就斷掉搜尋。
+    
     full_results = search_units(UNITS_CACHE, q, top_k=9999)
+    
+    # 3. 根據偏好過濾結果
+    if preference == "article":
+        full_results = [r for r in full_results if r.get("is_article")]
+    elif preference == "video":
+        full_results = [r for r in full_results if not r.get("is_article")]
+
     resp = build_recommendations_response(q, full_results, offset=0, limit=TOP_K)
     return resp
 
