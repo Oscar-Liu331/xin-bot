@@ -555,116 +555,121 @@ def extract_address_from_query(q: str) -> str:
 
 def normalize_query(q: str):
     q = q.strip().lower()
-    if not q: return [], []
+    if not q: return [], [], [] # 回傳三個 list
 
-    # 定義功能性詞彙 (不列入計分)
     functional_words = [
         "文章", "影片", "想看", "給我", "只有", "只想看", "推薦", 
         "影音", "播放", "查詢", "找", "有哪些", "介紹"
     ]
     
-    core_terms = []   # 核心詞 (命中 JSON 分類)
-    other_terms = []  # 其他詞 (沒命中分類，但有意義)
+    user_input_core = []   # 使用者真的打出來的詞 (例如: 焦慮)
+    category_expanded = [] # 同一群組的聯想詞 (例如: 緊張、恐慌)
+    other_terms = []       # 其他情境詞
     
-    # 1. 先抓核心詞 (根據 keywords.json)
-    # 我們遍歷所有類別的關鍵字，看使用者輸入有沒有包含
+    found_categories = set()
+
+    # 1. 掃描使用者輸入，抓出命中哪些分類
     for category, kws in KEYWORDS_DATA.items():
         for kw in kws:
             if kw in q:
-                if kw not in core_terms:
-                    core_terms.append(kw)
+                if kw not in user_input_core:
+                    user_input_core.append(kw)
+                found_categories.add(category) # 記住這個分類 (例如 anxiety_panic)
     
-    # 2. 抓其他詞 (剩餘的有意義詞彙)
-    # 先把核心詞從字串中暫時移除，避免重複計算
+    # 2. 根據命中的分類，進行「同義詞擴展」
+    for cat in found_categories:
+        group_kws = KEYWORDS_DATA[cat]
+        for kw in group_kws:
+            # 如果這個詞不是使用者打的，就加入擴展清單
+            if kw not in user_input_core and kw not in category_expanded:
+                category_expanded.append(kw)
+
+    # 3. 處理剩餘的「其他詞」
+    # 先把核心詞從字串中移除
     temp_q = q
-    for kw in core_terms:
-        temp_q = temp_q.replace(kw, " ") # 用空白取代，保留位置
-        
+    for kw in user_input_core:
+        temp_q = temp_q.replace(kw, " ") 
     for fw in functional_words:
         temp_q = temp_q.replace(fw, " ")
 
-    # 使用正則表達式切分剩下的字串
     parts = re.split(r"[，。！!？?\s、；;:：]+", temp_q)
-    
     for part in parts:
-        # 條件：長度 >= 2，且不在停用詞表 (STOP_WORDS) 裡
         if len(part) >= 2 and part not in STOP_WORDS:
             if part not in other_terms:
                 other_terms.append(part)
                 
-    # debug 輸出，讓你知道切分結果
-    # print(f"[Debug] 原始: {q} | 核心: {core_terms} | 其他: {other_terms}")
-    
-    return core_terms, other_terms
+    return user_input_core, category_expanded, other_terms
 
-def score_unit(unit, core_terms, other_terms):
-    # 取得標題與內文
+def score_unit(unit, user_core, expanded_core, other_terms):
     title = (unit.get("section_title") or "") + (unit.get("title") or "")
-    content = unit.get("content_text", "") or "" # 這裡只單純看內文，不含字幕
+    content = unit.get("content_text", "") or "" 
     
-    # 若該單元完全沒內容，直接回傳
     if not title and not content: 
         return 0.0, None
 
     score = 0.0
     
-    # --- A. 核心詞計分 ---
-    # 規則：標題出現+6，內文出現+4 (無上限)
-    for kw in core_terms:
-        # 1. 標題命中
+    # --- A. 使用者親自輸入的詞 (權重最高: 精準命中) ---
+    for kw in user_core:
+        # 標題命中 +10
         if kw in title:
-            score += 6.0
-            
-        # 2. 內文命中 (移除上限，出現幾次算幾次)
-        # 使用 count 計算出現次數
+            score += 10.0
+        # 內文命中 +2
         cnt = content.count(kw)
         if cnt > 0:
-            score += cnt * 4.0
+            score += cnt * 2.0
 
-    # --- B. 其他詞計分 ---
-    # 規則：其他詞+1 (我們設為：標題或內文有出現就+1)
+    # --- B. 同義擴展詞 (權重次高: 模糊命中) ---
+    # 例如搜「失眠」，標題是「睡不著」的影片也會加分
+        # 標題命中 +10
+        if kw in title:
+            score += 10.0
+        # 內文命中 +2
+        cnt = content.count(kw)
+        if cnt > 0:
+            score += cnt * 2.0
+
+    # --- C. 其他情境詞 (權重最低) ---
     for kw in other_terms:
-        # 這裡可以累積：標題有+1，內文有再+1
         if kw in title:
             score += 1.0
-        
-        # 內文出現次數，原本邏輯是+1，這邊設計為每出現一次+1 (無上限)
-        # 如果你希望其他詞只加一次，就把下方改成 if kw in content: score += 1.0
         cnt = content.count(kw)
         if cnt > 0:
-            score += cnt * 1.0
+            score += cnt * 0.5
 
-    # --- C. 字幕連續性計分 (核心深度) ---
-    # 規則：影片中有「連續三段話」都出現核心詞，再加 2 分
+    # --- D. 字幕連續性計分 ---
+    # 這裡我們「只看使用者輸入的詞」來判斷是否深入討論
+    # 避免擴展詞太多導致隨便都連續命中
     subtitles = unit.get("subtitles", [])
     best_seg = None
     best_seg_score = 0
     
-    # 1. 先標記每一句字幕是否有「核心詞」
-    # has_core_list 是一個 True/False 的陣列，例如 [False, True, True, True, False...]
     has_core_list = []
     
     for seg in subtitles:
         seg_text = seg.get("text", "")
-        # 檢查這句字幕有沒有包含任一個核心詞
-        hits = sum(1 for kw in core_terms if kw in seg_text)
+        # 只統計 user_core
+        hits = sum(1 for kw in user_core if kw in seg_text)
+        
+        # 如果使用者輸入的沒中，我們也可以寬容一點，看看 expanded_core 有沒有中
+        # 這樣「睡不著」的字幕也能被「失眠」搜尋到
+        if hits == 0:
+            hits = sum(1 for kw in expanded_core if kw in seg_text) * 0.5 # 算半次
+
         has_core = (hits > 0)
         has_core_list.append(has_core)
 
-        # 順便找最佳片段 (給前端顯示小提醒用)
         if hits > best_seg_score:
             best_seg_score = hits
             best_seg = seg
 
-    # 2. 檢查是否有「連續三個 True」
-    # 使用 sliding window (滑動視窗) 檢查 i, i+1, i+2
+    # 檢查連續三個 True
     count_continuous_hits = 0
     if len(has_core_list) >= 3:
         for i in range(len(has_core_list) - 2):
             if has_core_list[i] and has_core_list[i+1] and has_core_list[i+2]:
                 count_continuous_hits += 1
     
-    # 每抓到一組連續三段，就加 2 分 (這會大幅獎勵深度討論的影片)
     score += count_continuous_hits * 2.0
 
     return score, best_seg
@@ -761,23 +766,20 @@ def format_time(seconds: float) -> str:
     return f"{m:02d}:{sec:02d}"
 
 def search_units(units: List[Dict[str, Any]], query: str, top_k: int = TOP_K):
-    # 1. 解析關鍵字：分為 核心詞 與 其他詞
-    core_terms, other_terms = normalize_query(query)
+    # 接收三個回傳值
+    user_core, expanded_core, other_terms = normalize_query(query)
     
-    # 2. 保底邏輯：如果都沒抓到核心詞，把 query 本身當作核心詞
-    # 避免使用者輸入「失眠」但剛好不在我們字典裡的尷尬狀況
-    if not core_terms and len(query) >= 2:
-        # 簡單判斷：如果 query 很長，可能包含雜訊，這時不強迫
-        # 但如果 query 很短，就當作核心詞
-        core_terms = [query]
+    # 保底：如果都沒抓到核心詞，把 query 本身當作核心詞
+    if not user_core and len(query) >= 2:
+        user_core = [query]
 
-    if not core_terms and not other_terms: 
+    if not user_core and not other_terms: 
         return []
 
     results = []
     for u in units:
-        # 傳入 core_terms 和 other_terms
-        score, best_seg = score_unit(u, core_terms, other_terms)
+        # 傳入三個參數
+        score, best_seg = score_unit(u, user_core, expanded_core, other_terms)
         
         if score > 0:
             r = dict(u)
