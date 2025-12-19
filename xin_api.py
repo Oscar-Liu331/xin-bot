@@ -865,7 +865,7 @@ def chat(req: ChatRequest):
             results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
             resp = build_nearby_points_response(addr, results)
 
-    # 3. 處理「下一頁」分頁邏輯 (微調：若有媒體偏好紀錄也要繼承)
+    # 3. 處理「下一頁」分頁邏輯
     elif detect_pagination_intent(q):
         history = HISTORY.get(session_id, [])
         last = next(
@@ -878,7 +878,7 @@ def chat(req: ChatRequest):
             prev_resp = last["response"]
             # 繼承上一次的查詢詞
             prev_query = prev_resp.get("query_raw", prev_resp.get("query")) 
-            # 繼承上一次的媒體偏好 (如果有)
+            # 繼承上一次的媒體偏好
             prev_filter = prev_resp.get("filter_type", None) 
 
             new_offset = prev_resp["offset"] + prev_resp["limit"]
@@ -886,14 +886,13 @@ def chat(req: ChatRequest):
             # 重新搜尋完整清單
             full_results = search_units(UNITS_CACHE, prev_query, top_k=9999)
             
-            # 再次套用過濾 (重要！不然下一頁會跑出別種類型)
+            # 再次套用過濾
             if prev_filter == "article":
                 full_results = [r for r in full_results if r.get("is_article")]
             elif prev_filter == "video":
                 full_results = [r for r in full_results if not r.get("is_article")]
 
             resp = build_recommendations_response(prev_query, full_results, offset=new_offset, limit=TOP_K)
-            # 記錄下過濾狀態供下一次分頁使用
             resp["filter_type"] = prev_filter
             resp["query_raw"] = prev_query
 
@@ -907,13 +906,27 @@ def chat(req: ChatRequest):
             
             # 1. 偵測媒體偏好
             media_pref = detect_media_preference(q)
-            user_core, _ = normalize_query(q)
             
+            # ▼▼▼ 新增修正：先移除指令詞，確保不會把「給我文章」當成搜尋關鍵字 ▼▼▼
+            temp_q = q
+            if media_pref:
+                # 這些詞若出現在句子裡，先把它們刪掉，看看剩下什麼
+                command_words = [
+                    "想看文章", "給我文章", "只有文章", "文章推薦", "找文章", "只想看文章",
+                    "想看影片", "給我影片", "播放影片", "影音", "看影片", "youtube", "只想看影片"
+                ]
+                for cmd in command_words:
+                    temp_q = temp_q.replace(cmd, "")
+            
+            # 用「清理過」的字串去分析核心詞
+            # 如果 user 輸入 "給我文章"，temp_q 會變空字串 -> user_core 會變空 -> 觸發繼承
+            user_core, _ = normalize_query(temp_q)
+            # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
+
             # 預設搜尋詞
             search_q = q
-            is_inheritance = False # 標記是否發生了繼承
             
-            # 2. 上下文繼承邏輯：如果使用者只說「給我文章」而沒有新關鍵字
+            # 2. 上下文繼承邏輯
             if not user_core and media_pref:
                 history = HISTORY.get(session_id, [])
                 
@@ -923,17 +936,20 @@ def chat(req: ChatRequest):
                                 and h["response"].get("type") == "course_recommendation"), None)
                 
                 if last_rec:
-                    # 重要：優先抓取 raw query (最原始的主題)，避免抓到被過濾後的詞
                     prev_resp = last_rec["response"]
+                    # 抓取上一次搜尋的原始關鍵字
                     search_q = prev_resp.get("query_raw") or prev_resp.get("query")
-                    is_inheritance = True
                     print(f"[chat] 繼承上一輪主題: {search_q}, 新增過濾: {media_pref}")
                 else:
                     print(f"[chat] 找不到上一筆推薦紀錄，搜尋詞維持: {search_q}")
+            
+            # 若不是繼承模式（例如使用者輸入「焦慮文章」），這裡的 search_q 應該要用清理過的 temp_q 比較準
+            # 但為了保險起見（避免誤刪），若 user_core 有東西，我們還是用 normalize_query 解析出來的核心詞機制去跑 search_units
+            # 不過 search_units 內部會再做一次 normalize，所以傳入原始 q 或 temp_q 差異不大，
+            # 關鍵是上面的 inheritance block 有沒有被觸發。
 
             # 3. 執行搜尋
-            # 如果是繼承模式，search_q 已經是舊主題 (如"焦慮")；如果不是，search_q 就是新輸入 (如"憂鬱影片")
-            # 這裡要注意 search_units 內部會再次 normalize，所以傳入 "焦慮" 是安全的
+            # 如果繼承成功，search_q 已經變回 "焦慮"
             full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
             
             # 4. 媒體類型過濾
@@ -948,13 +964,13 @@ def chat(req: ChatRequest):
             # 5. 建立回應
             resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
             
-            # 把關鍵資訊塞回 response，方便下一次分頁或切換類型時使用
             resp["filter_type"] = final_filter
             resp["query_raw"] = search_q 
 
             # 6. 補強提示
             if media_pref and not resp["results"]:
                 type_name = "文章" if media_pref == "article" else "影片"
+                # 這裡如果 search_q 還是 "給我文章"，代表繼承失敗；如果是 "焦慮"，代表真的沒文章
                 resp["message"] = f"關於「{search_q}」目前沒有相關的{type_name}內容。"
             
             # --- 修改核心邏輯結束 ---
