@@ -724,7 +724,14 @@ def format_time(seconds: float) -> str:
 
 def search_units(units: List[Dict[str, Any]], query: str, top_k: int = TOP_K):
     user_core, expanded = normalize_query(query)
-    if not user_core: return []
+    
+    # 修正：如果 query 裡沒核心詞，但 query 本身長度夠（可能是被繼承過來的詞），
+    # 我們強迫把 query 本身加入核心詞，避免回傳空陣列
+    if not user_core:
+        if len(query) >= 2:
+            user_core = [query]
+        else:
+            return []
 
     results = []
     for u in units:
@@ -875,39 +882,37 @@ def chat(req: ChatRequest):
         if special_intent:
             resp = build_special_intent_response(special_intent, q)
         else:
-            # --- A. 偵測媒體偏好 ---
+            # A. 偵測媒體偏好
             media_pref = detect_media_preference(q)
             
-            # --- B. 決定搜尋關鍵字 (上下文銜接) ---
+            # B. 上下文繼承：如果輸入「給我文章」導致核心詞為空，從歷史抓回「焦慮」
             user_core, _ = normalize_query(q)
             search_q = q
             
-            # 如果沒有核心詞但有媒體偏好，強制抓取上一筆主題
             if not user_core and media_pref:
                 history = HISTORY.get(session_id, [])
                 last_rec = next((h for h in reversed(history) if h["response"].get("type") == "course_recommendation"), None)
                 if last_rec:
-                    # 這邊是關鍵：把 search_q 替換成上次的主題（如：焦慮）
-                    search_q = last_rec["response"].get("query") 
-                    print(f"[chat] 檢測到媒體切換意圖，延續主題: {search_q}")
+                    # 重要：繼承當初搜尋的核心主題 (如：焦慮)
+                    search_q = last_rec["response"].get("query")
+                    print(f"[chat] 繼承主題進行搜尋: {search_q}")
 
-            # --- C. 執行搜尋 (此時 search_q 已經是「焦慮」了) ---
+            # C. 執行搜尋
             full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
             
-            # --- D. 執行媒體過濾 ---
+            # D. 強制類型過濾
             if media_pref == "article":
                 full_results = [r for r in full_results if r.get("is_article")]
             elif media_pref == "video":
                 full_results = [r for r in full_results if not r.get("is_article")]
             
-            # --- E. 建立回應 ---
-            # 這裡傳入 search_q，讓回應標題顯示為「關於『焦慮』的結果」
+            # E. 建立回應 (傳入 search_q)
             resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
             
-            # 補強：如果過濾後沒東西，給予明確提示
+            # 修正原有的語法錯誤
             if media_pref and not resp["results"]:
                 type_name = "文章" if media_pref == "article" else "影片"
-                resp["message"] = f"關於「{search_q}」目前沒有相關的{type_name}內容。
+                resp["message"] = f"關於「{search_q}」目前沒有相關的{type_name}內容。"
 
     # --- 記錄歷史紀錄 ---
     history_list = HISTORY.setdefault(session_id, [])
