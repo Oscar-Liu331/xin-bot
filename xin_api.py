@@ -553,73 +553,75 @@ def extract_address_from_query(q: str) -> str:
     print(f"[debug] extract_address_from_query: '{original}' -> '{q}'")
     return q
 
-def normalize_query(q: str) -> List[str]:
-    q = q.strip()
-    if not q:
-        return []
+def normalize_query(q: str):
+    q = q.strip().lower()
+    if not q: return [], []
 
-    terms: List[str] = []
+    # --- 新增：定義功能性關鍵字（不列入搜尋權重計算） ---
+    media_commands = ["文章", "影片", "影片推薦", "文章推薦", "想看", "給我", "播放"]
     
-    # --- [核心修改] 分類擴展邏輯 ---
-    # 檢查使用者的輸入是否包含任何分類中的關鍵字
-    expanded_categories = []
+    user_core_terms = []   # 使用者輸入的核心詞
+    expanded_terms = []    # 聯想詞
+    
+    # --- 1. 偵測分類詞 ---
     for category, kws in KEYWORDS_DATA.items():
-        if any(kw in q for kw in kws):
-            expanded_categories.append(category)
-            # 將該分類的所有詞加入搜尋關鍵字中
-            for kw in kws:
-                if kw not in terms:
-                    terms.append(kw)
+        found_in_q = [kw for kw in kws if kw in q]
+        if found_in_q:
+            user_core_terms.extend(found_in_q)
+            expanded_terms.extend(kws)
     
-    if expanded_categories:
-        print(f"[search-debug] 命中分類 {expanded_categories}，擴展關鍵字至 {len(terms)} 個")
-    # -----------------------------
-
-    # 原有的斷詞與清理邏輯 (保留以處理非分類詞)
+    # --- 2. 處理其他詞彙並過濾功能性詞彙 ---
     parts = re.split(r"[，。！!？?\s、；;:：]+", q)
     for part in parts:
-        part = part.strip()
-        if not part or part in STOP_WORDS:
-            continue
-        if part not in terms:
-            terms.append(part)
+        # 增加判斷：長度 >= 2、不在停用詞中、且「不是媒體指令」
+        if len(part) >= 2 and part not in STOP_WORDS and part not in media_commands:
+            if part not in user_core_terms:
+                user_core_terms.append(part)
 
-    return terms
+    # 去重
+    expanded_terms = list(set(expanded_terms) - set(user_core_terms))
+    
+    return user_core_terms, expanded_terms
 
-def score_unit(unit, query_terms, core_terms):
+def score_unit(unit, user_core_terms, expanded_terms):
     text = unit.get("_search_text", "") or ""
-    if not text:
-        return 0.0, None
-
     title = (unit.get("section_title") or "") + (unit.get("title") or "")
-    
-    # 計算命中了多少個「不同」的關鍵字
-    unique_hits = [t for t in query_terms if t in text]
-    hit_count = len(unique_hits)
-    
-    if hit_count == 0:
-        return 0.0, None
+    if not text: return 0.0, None
 
-    # 基礎分：命中的不同詞越多，基礎分越高
-    base_score = hit_count * 10 
-    
-    # 標題加成：標題有命中任何一個詞，大幅加分
-    title_hit = any(t in title for t in query_terms)
-    title_bonus = 50 if title_hit else 0
+    score = 0.0
 
-    # 字幕集中度加成 (保留原有邏輯)
+    # A. 處理使用者輸入的【黃金核心詞】
+    for kw in user_core_terms:
+        if kw in title:
+            score += 6.0  # 標題命中加權
+        
+        # 內文命中次數加分 (限制上限避免洗分)
+        text_count = text.count(kw)
+        if text_count > 0:
+            score += min(text_count, 5) * 4.0 # 內文命中加權
+
+    # B. 處理分類擴展的【輔助聯想詞】
+    for kw in expanded_terms:
+        if kw in title:
+            score += 3.0  # 聯想詞在標題，給一半分數
+        if kw in text:
+            score += 1.0  # 聯想詞在內文，輕微加分
+
+    # C. 影片字幕連續性加分 (字幕特別加成)
     best_seg = None
     best_seg_score = 0
     for seg in unit.get("subtitles", []):
         seg_text = seg.get("text", "")
-        seg_score = sum(1 for t in query_terms if t in seg_text)
-        if seg_score > best_seg_score:
-            best_seg_score = seg_score
+        # 計算該段落命中了多少核心詞
+        seg_hits = sum(1 for t in user_core_terms if t in seg_text)
+        if seg_hits >= 2: # 如果一段話出現兩個以上核心詞
+            score += 2.0
+        
+        if seg_hits > best_seg_score:
+            best_seg_score = seg_hits
             best_seg = seg
 
-    final_score = base_score + title_bonus + (best_seg_score * 5)
-
-    return final_score, best_seg
+    return score, best_seg
 
 # 把「(上)/(下)/(（上）)/(（下）)/上篇/下篇/上集/下集」視為集數標記（可出現在任何位置）
 EP_TAG_RE = re.compile(r"(（上）|（下）|\(上\)|\(下\)|上篇|下篇|上集|下集)")
@@ -713,23 +715,12 @@ def format_time(seconds: float) -> str:
     return f"{m:02d}:{sec:02d}"
 
 def search_units(units: List[Dict[str, Any]], query: str, top_k: int = TOP_K):
-    terms = normalize_query(query)
-    if not terms:
-        return []
-    
-    core_terms: List[str] = [t for t in terms if t in MENTAL_KEYWORDS]
-
-    if not core_terms:
-        long_terms = sorted([t for t in terms if len(t) >= 2],
-                            key=lambda x: len(x),
-                            reverse=True)
-        core_terms = long_terms[:2]
-
-    print(f"[debug] query={query} → terms={terms} | core_terms={core_terms}")
+    user_core, expanded = normalize_query(query)
+    if not user_core: return []
 
     results = []
     for u in units:
-        score, best_seg = score_unit(u, terms, core_terms)
+        score, best_seg = score_unit(u, user_core, expanded)
         if score > 0:
             r = dict(u)
             r["_score"] = score
@@ -738,6 +729,16 @@ def search_units(units: List[Dict[str, Any]], query: str, top_k: int = TOP_K):
 
     results.sort(key=lambda x: x["_score"], reverse=True)
     return results
+
+def detect_media_preference(q: str) -> Optional[str]:
+    """
+    偵測使用者是否指定想看『文章』或『影片』
+    """
+    if any(w in q for w in ["想看文章", "給我文章", "只有文章", "文章推薦"]):
+        return "article"
+    if any(w in q for w in ["想看影片", "給我影片", "播放影片", "影音", "youtube"]):
+        return "video"
+    return None
 
 # ---------- 互動主迴圈 ----------
 app = FastAPI(title="心快活課程推薦 API")
@@ -795,10 +796,20 @@ def ping():
 @app.post("/chat")
 def chat(req: ChatRequest):
     q = req.query.strip()
-    session_id = req.session_id or "anonymous"  # 沒傳就先歸到 anonymous（理論上前端都會傳）
+    session_id = req.session_id or "anonymous"
     resp: Dict[str, Any]
-    print(">>> /chat session_id =", session_id)
-    # 1) 判斷是否為「心據點」/「看診」詢問
+    
+    print(f">>> [/chat] session_id: {session_id} | query: {q}")
+
+    # 1. 偵測使用者是否指定想看「文章」或「影片」
+    def detect_media_preference(text: str) -> Optional[str]:
+        if any(w in text for w in ["想看文章", "給我文章", "只有文章", "文章推薦", "找文章"]):
+            return "article"
+        if any(w in text for w in ["想看影片", "給我影片", "播放影片", "影音", "看影片", "youtube"]):
+            return "video"
+        return None
+
+    # 2. 判斷是否為「心據點」/「看診」詢問 (地址搜尋邏輯)
     if ("附近" in q) and ("心據點" in q or "看診" in q or "門診" in q):
         addr = extract_address_from_query(q)
         if not addr:
@@ -812,9 +823,7 @@ def chat(req: ChatRequest):
             geo = geocode_address(addr)
             if not geo:
                 resp = {
-                    "type": "xin_points",
-                    "address": addr,
-                    "points": [],
+                    "type": "xin_points", "address": addr, "points": [],
                     "message": f"查不到「{addr}」這個地址，請改成更正式的寫法試試看"
                 }
             else:
@@ -822,63 +831,65 @@ def chat(req: ChatRequest):
                 results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
                 resp = build_nearby_points_response(addr, results)
 
-    # 2) 直接輸入完整地址（開頭就是「台南市xxx」之類）
+    # 3. 直接輸入完整地址 (Regex 命中)
     elif ADDR_HEAD_RE.match(q):
         addr = q
         geo = geocode_address(addr)
         if not geo:
             resp = {
-                "type": "xin_points",
-                "address": addr,
-                "points": [],
+                "type": "xin_points", "address": addr, "points": [],
                 "message": f"查不到「{addr}」這個地址，請改成更正式的寫法試試看"
             }
         else:
             lat, lon = geo
             results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
             resp = build_nearby_points_response(addr, results)
+
+    # 4. 處理「下一頁」分頁邏輯
     elif detect_pagination_intent(q):
         history = HISTORY.get(session_id, [])
-        # 找最近一筆「課程推薦」
         last = next(
-            (h for h in reversed(history)
-            if h["response"].get("type") == "course_recommendation"),
+            (h for h in reversed(history) if h["response"].get("type") == "course_recommendation"),
             None
         )
-
         if not last:
-            resp = {
-                "type": "text",
-                "message": "目前沒有上一筆推薦結果，可以先問一個問題 😊"
-            }
+            resp = {"type": "text", "message": "目前沒有上一筆推薦結果，可以先問一個問題 😊"}
         else:
             prev = last["response"]
             new_offset = prev["offset"] + prev["limit"]
-
+            # 重新搜尋後切分頁
             full_results = search_units(UNITS_CACHE, prev["query"], top_k=9999)
-            resp = build_recommendations_response(
-                prev["query"],
-                full_results,
-                offset=new_offset,
-                limit=TOP_K
-            )
-    # 3) 特定情境：直接給建議，不走課程推薦
+            resp = build_recommendations_response(prev["query"], full_results, offset=new_offset, limit=TOP_K)
+
+    # 5. 特定情境建議 (憂鬱就醫、失智、小孩手機、婆媳衝突)
     else:
         special_intent = detect_special_intent(q)
-        print(f"[chat-debug] special_intent={special_intent}")
         if special_intent:
             resp = build_special_intent_response(special_intent, q)
+        
+        # 6. 一般課程 / 文章搜尋邏輯 (包含媒體過濾)
         else:
-            # 4) 其他情況：當作課程 / 文章推薦查詢
+            media_pref = detect_media_preference(q)
+            # 取得所有原始搜尋結果
             full_results = search_units(UNITS_CACHE, q, top_k=9999)
+            
+            # --- 執行媒體過濾 ---
+            if media_pref == "article":
+                full_results = [r for r in full_results if r.get("is_article")]
+            elif media_pref == "video":
+                full_results = [r for r in full_results if not r.get("is_article")]
+            
+            # 建立回應
             resp = build_recommendations_response(q, full_results, offset=0, limit=TOP_K)
+            
+            # 如果因為過濾導致沒結果，給予提示
+            if media_pref and not resp["results"]:
+                type_name = "文章" if media_pref == "article" else "影片"
+                resp["message"] = f"搜尋「{q}」目前沒有相關的{type_name}，您可以試著換個關鍵字，或查看另一種媒體類型。"
 
-    # --- 記錄歷史：依 session_id 分開 ---
+    # --- 記錄歷史紀錄 (依 session_id 分開) ---
     history_list = HISTORY.setdefault(session_id, [])
-    history_list.append({
-        "query": q,
-        "response": resp,
-    })
+    history_list.append({"query": q, "response": resp})
     if len(history_list) > 50:
         history_list.pop(0)
 
