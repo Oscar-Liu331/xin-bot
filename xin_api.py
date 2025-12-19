@@ -829,28 +829,10 @@ def chat(req: ChatRequest):
             return "video"
         return None
 
-    # --- 關鍵修正：準確判斷是否為「純指令」 ---
-    # 因為 normalize_query 可能無法將「給我文章」切開，導致它被當成一個關鍵字。
-    # 所以我們要手動把這些指令詞拿掉，看看剩下的字串是否為空。
+    # 先預先計算：這句話有沒有包含「實質的搜尋關鍵字」？
+    # 如果使用者輸入「給我文章」，normalize_query 應該會回傳空陣列 (因為這些都是功能詞)
+    user_core, _ = normalize_query(q)
     media_pref_check = detect_media_preference(q)
-    is_pure_command = False
-    
-    if media_pref_check:
-        temp_q = q
-        # 定義要移除的指令詞列表 (包含複合詞與單詞)
-        remove_list = [
-            "想看文章", "給我文章", "只有文章", "文章推薦", "找文章", "只想看文章",
-            "想看影片", "給我影片", "播放影片", "影音", "看影片", "youtube", "只想看影片",
-            "文章", "影片", "給我", "想看"
-        ]
-        for w in remove_list:
-            temp_q = temp_q.replace(w, "")
-        
-        # 移除指令詞後，再做一次正規化檢查
-        # 如果剩下的只有標點符號或停用詞，check_core 會是空 []，代表這是純指令
-        check_core, _ = normalize_query(temp_q)
-        if not check_core:
-            is_pure_command = True
 
     # 1. 處理「心據點」/「看診」地址搜尋邏輯
     if ("附近" in q) and ("心據點" in q or "看診" in q or "門診" in q):
@@ -901,7 +883,6 @@ def chat(req: ChatRequest):
             prev_filter = prev_resp.get("filter_type", None)
 
             new_offset = prev_resp["offset"] + prev_resp["limit"]
-            
             full_results = search_units(UNITS_CACHE, prev_query, top_k=9999)
             
             if prev_filter == "article":
@@ -913,17 +894,18 @@ def chat(req: ChatRequest):
             resp["filter_type"] = prev_filter
             resp["query_raw"] = prev_query
 
-    # ▼▼▼ 4. 處理「純粹的媒體切換指令」（繼承邏輯） ▼▼▼
-    # 使用剛剛算出來的 is_pure_command 變數
-    elif is_pure_command:
+    # ▼▼▼ 4. 新增：處理「純粹的媒體切換指令」（類似分頁邏輯） ▼▼▼
+    # 邏輯：如果有指定媒體 (如 "給我文章") 且 沒有新的關鍵字 (user_core 為空)
+    elif media_pref_check and not user_core:
         history = HISTORY.get(session_id, [])
+        # 抓取上一筆推薦紀錄
         last = next(
             (h for h in reversed(history) if isinstance(h.get("response"), dict) and h["response"].get("type") == "course_recommendation"),
             None
         )
 
         if not last:
-            # 沒有歷史紀錄
+            # 沒有歷史紀錄，只能當作一般搜尋（但沒有關鍵字可能會沒結果）
             resp = {
                 "type": "course_recommendation", "query": q, "total": 0, "video_count": 0, "article_count": 0,
                 "offset": 0, "limit": TOP_K, "has_more": False, "results": [],
@@ -932,41 +914,46 @@ def chat(req: ChatRequest):
         else:
             # 有歷史紀錄，進行繼承與篩選
             prev_resp = last["response"]
+            # 拿到最原始的搜尋主題 (例如 "焦慮")
             original_topic = prev_resp.get("query_raw") or prev_resp.get("query")
             
-            print(f"[chat] 繼承主題='{original_topic}' -> 切換類型='{media_pref_check}'")
+            print(f"[chat] 觸發篩選切換: 主題='{original_topic}' -> 類型='{media_pref_check}'")
 
-            # 重新搜尋
+            # 重新搜尋該主題的完整清單
             full_results = search_units(UNITS_CACHE, original_topic, top_k=9999)
 
-            # 強制套用新的過濾
+            # 強制套用新的過濾條件
             if media_pref_check == "article":
                 full_results = [r for r in full_results if r.get("is_article")]
             elif media_pref_check == "video":
                 full_results = [r for r in full_results if not r.get("is_article")]
 
-            # 回傳第一頁
+            # 回傳第一頁 (offset=0)
             resp = build_recommendations_response(original_topic, full_results, offset=0, limit=TOP_K)
             
-            # 更新狀態
+            # 重要：更新狀態，這樣下次按「下一頁」才會對
             resp["filter_type"] = media_pref_check
             resp["query_raw"] = original_topic
 
+            # 如果篩選後是空的，給個提示
             if not resp["results"]:
                 type_name = "文章" if media_pref_check == "article" else "影片"
                 resp["message"] = f"關於「{original_topic}」目前沒有相關的{type_name}內容。"
+    # ▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲▲
 
-    # 5. 一般搜尋 (含特定情境)
+    # 5. 特定情境建議與一般搜尋 (這裡就是全新的搜尋了)
     else:
         special_intent = detect_special_intent(q)
         if special_intent:
             resp = build_special_intent_response(special_intent, q)
         else:
-            # 全新搜尋
+            # 這是一次全新的搜尋（例如輸入「憂鬱文章」）
             search_q = q
+            
+            # 執行搜尋
             full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
             
-            # 這裡也要處理：如果這句話是「焦慮文章」(有關鍵字+有偏好)，要直接過濾
+            # 如果這句話本身就包含篩選意圖 (例如 "憂鬱文章")
             final_filter = None
             if media_pref_check == "article":
                 full_results = [r for r in full_results if r.get("is_article")]
@@ -977,6 +964,7 @@ def chat(req: ChatRequest):
             
             resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
             
+            # 記錄狀態
             resp["filter_type"] = final_filter
             resp["query_raw"] = search_q 
 
