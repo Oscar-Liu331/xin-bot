@@ -620,14 +620,15 @@ def score_unit(unit, user_core, expanded_core, other_terms):
             score += cnt * 2.0
 
     # --- B. 同義擴展詞 (權重次高: 模糊命中) ---
-    # 例如搜「失眠」，標題是「睡不著」的影片也會加分
-        # 標題命中 +10
+    # ✨✨✨【這裡要修正】原本少了迴圈，且分數應該是 5.0 ✨✨✨
+    for kw in expanded_core:
+        # 標題命中 +5
         if kw in title:
-            score += 10.0
-        # 內文命中 +2
+            score += 5.0
+        # 內文命中 +1
         cnt = content.count(kw)
         if cnt > 0:
-            score += cnt * 2.0
+            score += cnt * 1.0
 
     # --- C. 其他情境詞 (權重最低) ---
     for kw in other_terms:
@@ -638,8 +639,6 @@ def score_unit(unit, user_core, expanded_core, other_terms):
             score += cnt * 0.5
 
     # --- D. 字幕連續性計分 ---
-    # 這裡我們「只看使用者輸入的詞」來判斷是否深入討論
-    # 避免擴展詞太多導致隨便都連續命中
     subtitles = unit.get("subtitles", [])
     best_seg = None
     best_seg_score = 0
@@ -648,13 +647,12 @@ def score_unit(unit, user_core, expanded_core, other_terms):
     
     for seg in subtitles:
         seg_text = seg.get("text", "")
-        # 只統計 user_core
+        # 優先統計 user_core
         hits = sum(1 for kw in user_core if kw in seg_text)
         
-        # 如果使用者輸入的沒中，我們也可以寬容一點，看看 expanded_core 有沒有中
-        # 這樣「睡不著」的字幕也能被「失眠」搜尋到
+        # 如果使用者輸入的沒中，寬容檢查 expanded_core (算半次)
         if hits == 0:
-            hits = sum(1 for kw in expanded_core if kw in seg_text) * 0.5 # 算半次
+            hits = sum(1 for kw in expanded_core if kw in seg_text) * 0.5 
 
         has_core = (hits > 0)
         has_core_list.append(has_core)
@@ -885,7 +883,9 @@ def chat(req: ChatRequest):
     q_cleaned = q_cleaned.strip()
     
     # 3. 嘗試解析核心詞（使用清洗後的字串）
-    user_core, _ = normalize_query(q_cleaned)
+    # ✨ 修正點：這裡接收 3 個回傳值 (user_core, expanded_core, other_terms)
+    # 我們只需要 user_core 來判斷是否需要強制視為新主題
+    user_core, _, _ = normalize_query(q_cleaned)
     
     # 如果清洗後還有剩餘文字（且長度夠），但 normalize 沒抓到（例如"失眠"不在關鍵字表），強迫將其視為新主題
     if not user_core and len(q_cleaned) >= 2:
@@ -1081,27 +1081,25 @@ def nearby(req: NearbyRequest):
 @app.post("/recommend")
 def recommend(req: RecommendRequest):
     q = req.query.strip()
-    # 確保與 chat 邏輯中的 session_id 命名一致 (預設 anonymous)
     sid = "anonymous" 
     
     # 1. 偵測媒體偏好 (文章/影片)
     pref = detect_media_preference(q)
     
     # 2. 獲取核心詞
-    user_core, _ = normalize_query(q)
+    # ✨✨✨【這裡要修正】變成接收 3 個值 ✨✨✨
+    user_core, _, _ = normalize_query(q)
     
     # 3. 上下文繼承：如果沒核心詞但有偏好，去翻 HISTORY
     search_q = q
     if not user_core and pref:
         history = HISTORY.get(sid, [])
-        # 這裡的 item["response"] 對應到 chat 存入的結構
         last_rec = next((h for h in reversed(history) if h["response"].get("type") == "course_recommendation"), None)
         if last_rec:
-            # 繼承前一次搜尋成功的主題詞
             search_q = last_rec["response"].get("query")
             print(f"[recommend] 繼承主題: {search_q}")
 
-    # 4. 執行搜尋 (用 search_q 以確保 search_units 能抓到 user_core)
+    # 4. 執行搜尋
     full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
     
     # 5. 媒體過濾
@@ -1113,7 +1111,7 @@ def recommend(req: RecommendRequest):
     # 6. 建立回應
     resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
     
-    # 7. 存回歷史 (格式統一為 {"query": ..., "response": ...})
+    # 7. 存回歷史
     history_list = HISTORY.setdefault(sid, [])
     history_list.append({"query": q, "response": resp})
     
