@@ -557,28 +557,25 @@ def normalize_query(q: str):
     q = q.strip().lower()
     if not q: return [], []
 
-    # --- 1. 定義「功能性/指令類」詞彙，不應計入搜尋評分 ---
-    # 這些詞是用來表達意圖，而非主題內容，必須過濾掉
+    # 定義「功能指令類」詞彙，不應計入搜尋評分
     functional_words = [
         "文章", "影片", "想看", "給我", "只有", "只想看", "推薦", 
-        "影音", "播放", "查詢", "找", "有哪些", "介紹"
+        "影音", "播放", "查詢", "找", "有哪些", "介紹", "我只想看"
     ]
     
-    user_core_terms = []   # 使用者輸入的內容核心詞
-    expanded_terms = []    # 從 JSON 分類聯想出的詞
+    user_core_terms = []   
+    expanded_terms = []    
     
-    # --- 2. 偵測使用者輸入了哪些分類詞 (原邏輯保留) ---
+    # 偵測分類關鍵字
     for category, kws in KEYWORDS_DATA.items():
         found_in_q = [kw for kw in kws if kw in q]
         if found_in_q:
             user_core_terms.extend(found_in_q)
             expanded_terms.extend(kws)
     
-    # --- 3. 處理剩餘詞彙並剔除功能性指令與停用詞 ---
-    # 這裡的 re.split 會根據標點符號與空格切分字串
+    # 處理剩餘詞彙並剔除功能指令與停用詞
     parts = re.split(r"[，。！!？?\s、；;:：]+", q)
     for part in parts:
-        # 條件：長度大於等於 2、不在 stop_words 裡、且不是功能性指令詞
         if (len(part) >= 2 and 
             part not in STOP_WORDS and 
             part not in functional_words):
@@ -586,9 +583,7 @@ def normalize_query(q: str):
             if part not in user_core_terms:
                 user_core_terms.append(part)
 
-    # 去重並確保聯想詞不包含已在核心詞裡的
     expanded_terms = list(set(expanded_terms) - set(user_core_terms))
-    
     return user_core_terms, expanded_terms
 
 def score_unit(unit, user_core_terms, expanded_terms):
@@ -801,117 +796,38 @@ def ping():
     return {"status": "ok"}
 
 
-@app.post("/chat")
-def chat(req: ChatRequest):
-    q = req.query.strip()
-    session_id = req.session_id or "anonymous"
-    resp: Dict[str, Any]
+def normalize_query(q: str):
+    q = q.strip().lower()
+    if not q: return [], []
+
+    # 定義「功能指令類」詞彙，不應計入搜尋評分
+    functional_words = [
+        "文章", "影片", "想看", "給我", "只有", "只想看", "推薦", 
+        "影音", "播放", "查詢", "找", "有哪些", "介紹", "我只想看"
+    ]
     
-    print(f">>> [/chat] session_id: {session_id} | query: {q}")
-
-    # --- 內部輔助函式 ---
-    def detect_media_preference(text: str) -> Optional[str]:
-        """偵測使用者是否指定特定媒體類型"""
-        if any(w in text for w in ["想看文章", "給我文章", "只有文章", "文章推薦", "找文章", "只想看文章"]):
-            return "article"
-        if any(w in text for w in ["想看影片", "給我影片", "播放影片", "影音", "看影片", "youtube", "只想看影片"]):
-            return "video"
-        return None
-
-    # 1. 處理「心據點」/「看診」地址搜尋邏輯
-    if ("附近" in q) and ("心據點" in q or "看診" in q or "門診" in q):
-        addr = extract_address_from_query(q)
-        if not addr:
-            resp = {
-                "type": "xin_points",
-                "address": None,
-                "points": [],
-                "message": "我有點抓不到地址，請嘗試輸入完整地址，例如：台南市東區大學路1號"
-            }
-        else:
-            geo = geocode_address(addr)
-            if not geo:
-                resp = {
-                    "type": "xin_points", "address": addr, "points": [],
-                    "message": f"查不到「{addr}」這個地址，請改成更正式的寫法試試看"
-                }
-            else:
-                lat, lon = geo
-                results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
-                resp = build_nearby_points_response(addr, results)
-
-    # 2. 直接輸入完整地址
-    elif ADDR_HEAD_RE.match(q):
-        addr = q
-        geo = geocode_address(addr)
-        if not geo:
-            resp = {
-                "type": "xin_points", "address": addr, "points": [],
-                "message": f"查不到「{addr}」這個地址，請改成更正式的寫法試試看"
-            }
-        else:
-            lat, lon = geo
-            results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
-            resp = build_nearby_points_response(addr, results)
-
-    # 3. 處理「下一頁」分頁邏輯
-    elif detect_pagination_intent(q):
-        history = HISTORY.get(session_id, [])
-        last = next(
-            (h for h in reversed(history) if h["response"].get("type") == "course_recommendation"),
-            None
-        )
-        if not last:
-            resp = {"type": "text", "message": "目前沒有上一筆推薦結果，可以先問一個問題 😊"}
-        else:
-            prev = last["response"]
-            new_offset = prev["offset"] + prev["limit"]
-            full_results = search_units(UNITS_CACHE, prev["query"], top_k=9999)
-            resp = build_recommendations_response(prev["query"], full_results, offset=new_offset, limit=TOP_K)
-
-    # 4. 特定情境建議與一般課程搜尋
-    else:
-        special_intent = detect_special_intent(q)
-        if special_intent:
-            resp = build_special_intent_response(special_intent, q)
-        else:
-            # --- A. 偵測媒體偏好 ---
-            media_pref = detect_media_preference(q)
+    user_core_terms = []   
+    expanded_terms = []    
+    
+    # 偵測分類關鍵字
+    for category, kws in KEYWORDS_DATA.items():
+        found_in_q = [kw for kw in kws if kw in q]
+        if found_in_q:
+            user_core_terms.extend(found_in_q)
+            expanded_terms.extend(kws)
+    
+    # 處理剩餘詞彙並剔除功能指令與停用詞
+    parts = re.split(r"[，。！!？?\s、；;:：]+", q)
+    for part in parts:
+        if (len(part) >= 2 and 
+            part not in STOP_WORDS and 
+            part not in functional_words):
             
-            # --- B. 延續上文邏輯 ---
-            # 如果使用者只輸入「我想看文章」，裡面沒關鍵字，就去抓歷史紀錄的主題
-            search_q = q
-            user_core, _ = normalize_query(q)
-            
-            if not user_core and media_pref:
-                history = HISTORY.get(session_id, [])
-                last_rec = next((h for h in reversed(history) if h["response"].get("type") == "course_recommendation"), None)
-                if last_rec:
-                    search_q = last_rec["query"]
-                    print(f"[chat] 延續上文主題: {search_q}")
+            if part not in user_core_terms:
+                user_core_terms.append(part)
 
-            # --- C. 執行搜尋與過濾 ---
-            full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
-            
-            if media_pref == "article":
-                full_results = [r for r in full_results if r.get("is_article")]
-            elif media_pref == "video":
-                full_results = [r for r in full_results if not r.get("is_article")]
-            
-            resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
-            
-            # 如果搜尋結果為空且有媒體偏好，給予提示
-            if media_pref and not resp["results"]:
-                type_name = "文章" if media_pref == "article" else "影片"
-                resp["message"] = f"關於「{search_q}」目前沒有相關的{type_name}，建議您嘗試另一種媒體類型。"
-
-    # --- 記錄歷史紀錄 ---
-    history_list = HISTORY.setdefault(session_id, [])
-    history_list.append({"query": q, "response": resp})
-    if len(history_list) > 50:
-        history_list.pop(0)
-
-    return resp
+    expanded_terms = list(set(expanded_terms) - set(user_core_terms))
+    return user_core_terms, expanded_terms
 
 @app.get("/history")
 def get_history(session_id: str):
