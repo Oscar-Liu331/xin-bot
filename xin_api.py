@@ -886,30 +886,44 @@ def chat(req: ChatRequest):
         if special_intent:
             resp = build_special_intent_response(special_intent, q)
         else:
+            # 1. 偵測媒體偏好
             media_pref = detect_media_preference(q)
             user_core, _ = normalize_query(q)
+            
+            # 預設搜尋詞
             search_q = q
-            force_core = None # 新增：用來強迫搜尋引擎認得主題
-
-            # 只有在沒核心詞且有偏好時，才去抓歷史
+            
+            # 2. 上下文繼承邏輯
             if not user_core and media_pref:
                 history = HISTORY.get(session_id, [])
-                last_rec = next((h for h in reversed(history) if h["response"].get("type") == "course_recommendation"), None)
+                print(f"[DEBUG] 歷史紀錄筆數: {len(history)}") # 檢查 session 有沒有對上
+                
+                # 尋找最近一筆課程推薦紀錄
+                last_rec = next((h for h in reversed(history) 
+                                if isinstance(h.get("response"), dict) 
+                                and h["response"].get("type") == "course_recommendation"), None)
+                
                 if last_rec:
+                    # 從 response 結構中抓取當初搜尋的主題詞
                     search_q = last_rec["response"].get("query")
-                    force_core = search_q # 強制將上次的主題設為核心詞
-                    print(f"[chat] 繼承主題: {search_q}")
+                    print(f"[DEBUG] 成功繼承主題: {search_q}")
+                else:
+                    print(f"[DEBUG] 找不到上一筆推薦紀錄，搜尋詞維持: {search_q}")
 
-            # 執行搜尋，並傳入 force_core
-            full_results = search_units(UNITS_CACHE, search_q, force_core=force_core)
+            # 3. 執行搜尋 (此處 search_q 必須是「焦慮」)
+            print(f"[DEBUG] 最終搜尋詞: {search_q}")
+            full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
             
+            # 4. 媒體類型過濾
             if media_pref == "article":
                 full_results = [r for r in full_results if r.get("is_article")]
             elif media_pref == "video":
                 full_results = [r for r in full_results if not r.get("is_article")]
             
+            # 5. 建立回應
             resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
             
+            # 6. 補強提示
             if media_pref and not resp["results"]:
                 type_name = "文章" if media_pref == "article" else "影片"
                 resp["message"] = f"關於「{search_q}」目前沒有相關的{type_name}內容。"
