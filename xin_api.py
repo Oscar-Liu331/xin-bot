@@ -829,10 +829,25 @@ def chat(req: ChatRequest):
             return "video"
         return None
 
-    # 先預先計算：這句話有沒有包含「實質的搜尋關鍵字」？
-    # 如果使用者輸入「給我文章」，normalize_query 應該會回傳空陣列 (因為這些都是功能詞)
-    user_core, _ = normalize_query(q)
+    # ✨ 1. 先偵測媒體偏好
     media_pref_check = detect_media_preference(q)
+
+    # ✨ 2. [修正重點] 建立一個「檢查用」的字串，把那些功能性指令拿掉
+    # 這樣才能正確判斷：使用者是「單純想切換模式」還是「輸入了新的關鍵字 + 指定模式」
+    q_for_check = q
+    if media_pref_check == "article":
+        # 把能觸發文章偏好的詞都清掉 (包含單詞 "文章" 以防萬一)
+        for w in ["想看文章", "給我文章", "只有文章", "文章推薦", "找文章", "只想看文章", "文章"]:
+            q_for_check = q_for_check.replace(w, "")
+    elif media_pref_check == "video":
+        for w in ["想看影片", "給我影片", "播放影片", "影音", "看影片", "youtube", "只想看影片", "影片"]:
+            q_for_check = q_for_check.replace(w, "")
+    
+    # ✨ 3. 使用「清洗過」的字串來判斷有沒有核心關鍵字
+    # 如果 q="給我文章"，q_for_check就會變成 ""，user_core 就會是 [] -> 正確觸發切換邏輯
+    # 如果 q="焦慮文章"，q_for_check就會變成 "焦慮"，user_core 就會是 ["焦慮"] -> 正確觸發搜尋邏輯
+    user_core, _ = normalize_query(q_for_check)
+
 
     # 1. 處理「心據點」/「看診」地址搜尋邏輯
     if ("附近" in q) and ("心據點" in q or "看診" in q or "門診" in q):
@@ -894,7 +909,7 @@ def chat(req: ChatRequest):
             resp["filter_type"] = prev_filter
             resp["query_raw"] = prev_query
 
-    # ▼▼▼ 4. 新增：處理「純粹的媒體切換指令」（類似分頁邏輯） ▼▼▼
+    # ▼▼▼ 4. 處理「純粹的媒體切換指令」（類似分頁邏輯） ▼▼▼
     # 邏輯：如果有指定媒體 (如 "給我文章") 且 沒有新的關鍵字 (user_core 為空)
     elif media_pref_check and not user_core:
         history = HISTORY.get(session_id, [])
