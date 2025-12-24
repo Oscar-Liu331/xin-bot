@@ -999,36 +999,36 @@ def chat(req: ChatRequest):
 
     # E. 特定情境建議 與 一般搜尋
     else:
-        special_intent = detect_special_intent(q)
-        if special_intent:
-            resp = build_special_intent_response(special_intent, q)
-        else:
+        # special_intent = detect_special_intent(q)
+        # if special_intent:
+        #     resp = build_special_intent_response(special_intent, q)
+        # else:
             # 這是一次全新的搜尋（例如輸入「失眠」，或是「失眠文章」）
             # 如果 q_cleaned 有東西，就用 q_cleaned (去除"文章"後的純主題)，否則用原字串
-            search_q = q_cleaned if q_cleaned else q
-            
-            print(f"[chat] 執行新搜尋: '{search_q}'")
-            
-            full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
-            
-            # 如果這句話本身就包含篩選意圖 (例如 "失眠文章")
-            final_filter = None
-            if media_pref_check == "article":
-                full_results = [r for r in full_results if r.get("is_article")]
-                final_filter = "article"
-            elif media_pref_check == "video":
-                full_results = [r for r in full_results if not r.get("is_article")]
-                final_filter = "video"
-            
-            resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
-            
-            # 【關鍵修正】確保這裡寫入 query_raw
-            resp["filter_type"] = final_filter
-            resp["query_raw"] = search_q 
+        search_q = q_cleaned if q_cleaned else q
+        
+        print(f"[chat] 執行新搜尋: '{search_q}'")
+        
+        full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
+        
+        # 如果這句話本身就包含篩選意圖 (例如 "失眠文章")
+        final_filter = None
+        if media_pref_check == "article":
+            full_results = [r for r in full_results if r.get("is_article")]
+            final_filter = "article"
+        elif media_pref_check == "video":
+            full_results = [r for r in full_results if not r.get("is_article")]
+            final_filter = "video"
+        
+        resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
+        
+        # 【關鍵修正】確保這裡寫入 query_raw
+        resp["filter_type"] = final_filter
+        resp["query_raw"] = search_q 
 
-            if media_pref_check and not resp["results"]:
-                type_name = "文章" if media_pref_check == "article" else "影片"
-                resp["message"] = f"關於「{search_q}」目前沒有相關的{type_name}內容。"
+        if media_pref_check and not resp["results"]:
+            type_name = "文章" if media_pref_check == "article" else "影片"
+            resp["message"] = f"關於「{search_q}」目前沒有相關的{type_name}內容。"
 
     # --- 記錄歷史紀錄 ---
     history_list = HISTORY.setdefault(session_id, [])
