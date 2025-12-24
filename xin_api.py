@@ -617,7 +617,7 @@ def score_unit(unit, user_core, expanded_core, other_terms):
         # 內文命中 +2
         cnt = content.count(kw)
         if cnt > 0:
-            score += cnt * 2.0
+            score += cnt * 4.0
 
     # --- B. 同義擴展詞 (權重次高: 模糊命中) ---
     # ✨✨✨【這裡要修正】原本少了迴圈，且分數應該是 5.0 ✨✨✨
@@ -628,7 +628,7 @@ def score_unit(unit, user_core, expanded_core, other_terms):
         # 內文命中 +1
         cnt = content.count(kw)
         if cnt > 0:
-            score += cnt * 1.0
+            score += cnt * 2.0
 
     # --- C. 其他情境詞 (權重最低) ---
     for kw in other_terms:
