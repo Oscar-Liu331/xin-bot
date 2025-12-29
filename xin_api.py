@@ -3,6 +3,9 @@ import re
 from pathlib import Path
 from typing import List, Dict, Any
 
+from sentence_transformers import SentenceTransformer, util
+import torch
+
 import requests
 from math import radians, sin, cos, asin, sqrt
 
@@ -31,11 +34,14 @@ TOP_K = 5
 XIN_POINTS_FILE = Path("xin_points.json")
 UNITS_FILE = Path("wellbeing_elearn_pro_all_with_articles.json")
 
-# --- 關鍵字載入邏輯 ---
+EMBEDDING_MODEL = None
+CORPUS_EMBEDDINGS = None # 用來存所有課程的向量
+
+# --- 核心詞 ---
 KEYWORDS_FILE = Path("keywords.json")
 # --- 全域變數 ---
-KEYWORDS_DATA = {} # 存放原始分類結構
-MENTAL_KEYWORDS = [] # 扁平化後的清單，供原搜尋邏輯使用
+KEYWORDS_DATA = {} 
+MENTAL_KEYWORDS = [] 
 STOP_WORDS = []
 
 def load_keywords_from_json():
@@ -306,7 +312,6 @@ def build_nearby_points_response(address: str, results):
         "points": points
     }
 
-
 def build_recommendations_response(
     query: str,
     results: List[Dict[str, Any]],
@@ -522,6 +527,30 @@ def load_all_units() -> List[Dict[str, Any]]:
 
     print(f"[load] ✅ 共載入 {len(units)} 個單元（含影片 + 文章）")
     return units
+
+def init_vector_model():
+    global EMBEDDING_MODEL, CORPUS_EMBEDDINGS
+    print("[init] 正在載入向量模型 (shibing624/text2vec-base-chinese)...")
+    
+    # 載入模型 (第一次執行會下載約 400MB)
+    EMBEDDING_MODEL = SentenceTransformer('shibing624/text2vec-base-chinese')
+    
+    print("[init] 模型載入完成，開始將課程資料向量化...")
+    
+    # 準備要向量化的文字清單
+    # 我們把 標題 + 內容 + 字幕 全部串起來當作該課程的代表文字
+    corpus_texts = []
+    for unit in UNITS_CACHE:
+        # _search_text 在 load_all_units 已經組好了，直接用
+        text = unit.get("_search_text", "")
+        # 為了避免文字過長超過模型限制，可以截斷 (例如前 512 字)
+        # 不過 text2vec通常會自動截斷，這裡簡單處理即可
+        corpus_texts.append(text)
+        
+    # 轉成向量 (convert_to_tensor=True 回傳 pytorch tensor，方便計算)
+    CORPUS_EMBEDDINGS = EMBEDDING_MODEL.encode(corpus_texts, convert_to_tensor=True)
+    
+    print(f"[init] ✅ 已建立 {len(CORPUS_EMBEDDINGS)} 筆課程向量索引")
 
 def extract_address_from_query(q: str) -> str:
     original = q
@@ -798,6 +827,45 @@ def detect_media_preference(q: str) -> Optional[str]:
         return "video"
     return None
 
+def search_units_semantic(query: str, top_k: int = 5):
+    """
+    使用向量相似度進行語意搜尋
+    """
+    global EMBEDDING_MODEL, CORPUS_EMBEDDINGS
+    
+    if not EMBEDDING_MODEL or CORPUS_EMBEDDINGS is None:
+        print("⚠️ 向量模型尚未載入")
+        return []
+
+    # 1. 把使用者的問句轉成向量
+    query_embedding = EMBEDDING_MODEL.encode(query, convert_to_tensor=True)
+    
+    # 2. 計算相似度 (Cosine Similarity)
+    # util.semantic_search 會幫我們算好並排序
+    # 回傳格式: [[{'corpus_id': 0, 'score': 0.85}, ...]]
+    hits = util.semantic_search(query_embedding, CORPUS_EMBEDDINGS, top_k=top_k)
+    
+    # 3. 整理回傳結果
+    results = []
+    hit_list = hits[0] # 因為我們只查一個 query
+    
+    for hit in hit_list:
+        idx = hit['corpus_id']
+        score = hit['score']
+        
+        # 取得對應的課程資料
+        r = dict(UNITS_CACHE[idx])
+        
+        # 把分數存進去 (這裡的分數是 0~1 之間的相似度)
+        r["_score"] = score 
+        r["_best_segment"] = None # 向量搜尋比較難直接定位到哪一句字幕，先給 None
+        
+        # 過濾掉相似度太低的 (可選，例如低於 0.3 覺得不相關)
+        if score > 0.3:
+            results.append(r)
+            
+    return results
+
 # ---------- 互動主迴圈 ----------
 app = FastAPI(title="心快活課程推薦 API")
 
@@ -818,6 +886,8 @@ def serve_index():
 
 # 啟動時就先載入所有單元
 UNITS_CACHE: List[Dict[str, Any]] = load_all_units()
+
+init_vector_model()
 
 # 簡單放在記憶體的聊天紀錄（server 重啟會清空）
 HISTORY: Dict[str, List[Dict[str, Any]] ] = {}
@@ -859,7 +929,7 @@ def chat(req: ChatRequest):
     
     print(f">>> [/chat] session_id: {session_id} | query: {q}")
 
-    # --- 內部輔助函式 ---
+    # --- 內部輔助 1: 偵測媒體偏好 ---
     def detect_media_preference(text: str) -> Optional[str]:
         """偵測使用者是否指定特定媒體類型"""
         if any(w in text for w in ["想看文章", "給我文章", "只有文章", "文章推薦", "找文章", "只想看文章"]):
@@ -867,6 +937,52 @@ def chat(req: ChatRequest):
         if any(w in text for w in ["想看影片", "給我影片", "播放影片", "影音", "看影片", "youtube", "只想看影片"]):
             return "video"
         return None
+
+    # --- 內部輔助 2: 執行混合搜尋 (關鍵字 + 向量) ---
+    def execute_hybrid_search(search_query: str) -> List[Dict[str, Any]]:
+        print(f"[hybrid] 開始搜尋: {search_query}")
+        
+        # 1. 關鍵字搜尋 (Keyword Search)
+        kw_results = search_units(UNITS_CACHE, search_query, top_k=9999)
+        
+        # 2. 向量搜尋 (Semantic Search) - 取前 50 筆相關即可
+        # 注意：search_units_semantic 必須已定義在全域
+        vec_results = search_units_semantic(search_query, top_k=50)
+
+        # 3. 混合計分 (Hybrid Fusion)
+        combined_map = {}
+
+        # A. 先放入關鍵字結果
+        for r in kw_results:
+            # 使用 get_base_key 確保同一系列的內容能對齊
+            key = get_base_key(r.get("section_title"), r.get("title"))
+            combined_map[key] = r
+
+        # B. 融合向量結果
+        for r in vec_results:
+            key = get_base_key(r.get("section_title"), r.get("title"))
+            
+            # --- 權重設定 ---
+            # 關鍵字分數通常較大 (e.g. 10~50)
+            # 向量分數通常在 0~1 之間
+            VECTOR_WEIGHT_BOOST = 20.0  # 兩者都命中時，向量分數的加權倍率
+            VECTOR_WEIGHT_BASE = 10.0   # 只有向量命中時，向量分數的基礎倍率
+
+            if key in combined_map:
+                # 兩邊都找到：在原有分數上疊加向量分數
+                combined_map[key]["_score"] += (r["_score"] * VECTOR_WEIGHT_BOOST)
+            else:
+                # 只有向量找到：新增進去，給予基礎分數
+                # 為了避免不相關的雜訊，可以設定一個門檻，例如原始分數 > 0.3 才加入
+                if r["_score"] > 0.25: 
+                    r["_score"] = r["_score"] * VECTOR_WEIGHT_BASE
+                    combined_map[key] = r
+        
+        # 4. 轉回 List 並依總分重新排序
+        final_results = list(combined_map.values())
+        final_results.sort(key=lambda x: x["_score"], reverse=True)
+        
+        return final_results
 
     # 1. 偵測媒體偏好
     media_pref_check = detect_media_preference(q)
@@ -883,11 +999,9 @@ def chat(req: ChatRequest):
     q_cleaned = q_cleaned.strip()
     
     # 3. 嘗試解析核心詞（使用清洗後的字串）
-    # ✨ 修正點：這裡接收 3 個回傳值 (user_core, expanded_core, other_terms)
-    # 我們只需要 user_core 來判斷是否需要強制視為新主題
     user_core, _, _ = normalize_query(q_cleaned)
     
-    # 如果清洗後還有剩餘文字（且長度夠），但 normalize 沒抓到（例如"失眠"不在關鍵字表），強迫將其視為新主題
+    # 如果清洗後還有剩餘文字（且長度夠），但 normalize 沒抓到，強迫將其視為新主題
     if not user_core and len(q_cleaned) >= 2:
         user_core = [q_cleaned]
 
@@ -944,7 +1058,9 @@ def chat(req: ChatRequest):
             prev_filter = prev_resp.get("filter_type", None)
 
             new_offset = prev_resp["offset"] + prev_resp["limit"]
-            full_results = search_units(UNITS_CACHE, prev_query, top_k=9999)
+            
+            # 使用混合搜尋重新抓取完整清單
+            full_results = execute_hybrid_search(prev_query)
             
             if prev_filter == "article":
                 full_results = [r for r in full_results if r.get("is_article")]
@@ -955,7 +1071,7 @@ def chat(req: ChatRequest):
             resp["filter_type"] = prev_filter
             resp["query_raw"] = prev_query
 
-    # D. 【修正重點】處理「純粹的媒體切換指令」
+    # D. 處理「純粹的媒體切換指令」
     # 條件：有指定媒體 (例如"文章") 且 清洗後的字串是空的 (代表沒有輸入新主題)
     elif media_pref_check and not q_cleaned:
         history = HISTORY.get(session_id, [])
@@ -973,13 +1089,12 @@ def chat(req: ChatRequest):
             }
         else:
             prev_resp = last["response"]
-            # 這裡很重要：一定要抓到上一筆的「原始主題」(例如: 失眠)
             original_topic = prev_resp.get("query_raw") or prev_resp.get("query")
             
             print(f"[chat] 觸發篩選切換: 主題='{original_topic}' -> 類型='{media_pref_check}'")
 
-            # 重新搜尋該主題
-            full_results = search_units(UNITS_CACHE, original_topic, top_k=9999)
+            # 使用混合搜尋
+            full_results = execute_hybrid_search(original_topic)
 
             # 強制套用新的過濾條件
             if media_pref_check == "article":
@@ -991,25 +1106,19 @@ def chat(req: ChatRequest):
             
             # 更新狀態
             resp["filter_type"] = media_pref_check
-            resp["query_raw"] = original_topic # 確保傳承原始主題
+            resp["query_raw"] = original_topic 
 
             if not resp["results"]:
                 type_name = "文章" if media_pref_check == "article" else "影片"
                 resp["message"] = f"關於「{original_topic}」目前沒有相關的{type_name}內容。"
 
-    # E. 特定情境建議 與 一般搜尋
+    # E. 一般搜尋 (包含特定情境與混合搜尋)
     else:
-        # special_intent = detect_special_intent(q)
-        # if special_intent:
-        #     resp = build_special_intent_response(special_intent, q)
-        # else:
-            # 這是一次全新的搜尋（例如輸入「失眠」，或是「失眠文章」）
-            # 如果 q_cleaned 有東西，就用 q_cleaned (去除"文章"後的純主題)，否則用原字串
+        # 決定最終搜尋的主題詞
         search_q = q_cleaned if q_cleaned else q
         
-        print(f"[chat] 執行新搜尋: '{search_q}'")
-        
-        full_results = search_units(UNITS_CACHE, search_q, top_k=9999)
+        # 使用混合搜尋
+        full_results = execute_hybrid_search(search_q)
         
         # 如果這句話本身就包含篩選意圖 (例如 "失眠文章")
         final_filter = None
@@ -1022,7 +1131,7 @@ def chat(req: ChatRequest):
         
         resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
         
-        # 【關鍵修正】確保這裡寫入 query_raw
+        # 寫入狀態
         resp["filter_type"] = final_filter
         resp["query_raw"] = search_q 
 
@@ -1032,7 +1141,6 @@ def chat(req: ChatRequest):
 
     # --- 記錄歷史紀錄 ---
     history_list = HISTORY.setdefault(session_id, [])
-    # 這裡的 append 會把 resp (包含正確的 query_raw) 存進去
     history_list.append({"query": q, "response": resp})
     
     if len(history_list) > 50:
