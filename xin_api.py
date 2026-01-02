@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import List, Dict, Any
 import numpy as np
 from math import radians, sin, cos, asin, sqrt
+import urllib.parse
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -432,12 +433,44 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]], of
     }
 
 def build_nearby_points_response(address: str, results):
+    """
+    把 find_nearby_points 的結果轉成 JSON-friendly 結構
+    並加入 Google Maps 路線連結
+    """
     if not results:
-        return { "type": "xin_points", "address": address, "points": [], "message": f"在「{address}」5 公里內沒有找到心據點" }
+        return {
+            "type": "xin_points",
+            "address": address,
+            "points": [],
+            "message": f"在「{address}」5 公里內沒有找到心據點"
+        }
+
     points = []
+    # 先把起點（使用者輸入的地址）做 URL 編碼，避免中文字元出錯
+    origin_encoded = urllib.parse.quote(address)
+
     for p, d in results:
-        points.append({ "title": p.get("title"), "address": p.get("address"), "tel": p.get("tel"), "distance_km": round(d, 2) })
-    return { "type": "xin_points", "address": address, "points": points }
+        # 取得據點地址
+        dest_address = p.get("address", "")
+        dest_encoded = urllib.parse.quote(dest_address)
+        
+        # 組合 Google Maps 路線網址
+        # 格式：https://www.google.com/maps/dir/?api=1&origin=起點&destination=終點
+        map_url = f"https://www.google.com/maps/dir/?api=1&origin={origin_encoded}&destination={dest_encoded}"
+
+        points.append({
+            "title": p.get("title"),
+            "address": dest_address,
+            "tel": p.get("tel"),
+            "distance_km": round(d, 2),
+            "map_url": map_url  # <--- 新增這個欄位給前端使用
+        })
+
+    return {
+        "type": "xin_points",
+        "address": address,
+        "points": points
+    }
 
 def execute_hybrid_search(search_query: str) -> List[Dict[str, Any]]:
     print(f"[hybrid] 開始搜尋: {search_query}")

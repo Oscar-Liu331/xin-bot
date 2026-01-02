@@ -361,6 +361,9 @@
             if (p.tel) {
               lines.push(`   電話：${p.tel}`);
             }
+            if (p.map_url) {
+              lines.push(`   🚗 <a href="${p.map_url}" target="_blank" rel="noopener noreferrer">開啟導航路線</a>`);
+            }
           });
         }
 
