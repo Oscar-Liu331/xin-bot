@@ -433,10 +433,6 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]], of
     }
 
 def build_nearby_points_response(address: str, results):
-    """
-    把 find_nearby_points 的結果轉成 JSON-friendly 結構
-    並加入 Google Maps 路線連結
-    """
     if not results:
         return {
             "type": "xin_points",
@@ -446,24 +442,20 @@ def build_nearby_points_response(address: str, results):
         }
 
     points = []
-    # 先把起點（使用者輸入的地址）做 URL 編碼，避免中文字元出錯
     origin_encoded = urllib.parse.quote(address)
 
     for p, d in results:
-        # 取得據點地址
         dest_address = p.get("address", "")
         dest_encoded = urllib.parse.quote(dest_address)
         
-        # 組合 Google Maps 路線網址
-        # 格式：https://www.google.com/maps/dir/?api=1&origin=起點&destination=終點
-        map_url = f"https://www.google.com/maps/dir/?api=1&origin={origin_encoded}&destination={dest_encoded}"
+        map_url = f"https://www.google.com/maps/dir/?api=1&origin={origin_encoded}&destination={dest_encoded}&hl=zh-TW"
 
         points.append({
             "title": p.get("title"),
             "address": dest_address,
             "tel": p.get("tel"),
             "distance_km": round(d, 2),
-            "map_url": map_url  # <--- 新增這個欄位給前端使用
+            "map_url": map_url
         })
 
     return {

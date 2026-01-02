@@ -109,7 +109,7 @@
       line-height: 1.5;
       position: relative;
       word-wrap: break-word;
-      white-space: pre-wrap; /* 保留換行 */
+      white-space: pre-wrap;
     }
 
     .message-row.bot .message-bubble {
@@ -246,17 +246,14 @@
     const chatInputEl = document.getElementById('chatInput');
     const sendBtnEl = document.getElementById('sendBtn');
 
-    // 如果 HTML 不是跟 API 同網域，這邊可以改成 'http://localhost:8000'
     const API_BASE = '';
 
-    // ==== 建立 / 取得使用者專屬 session_id ====
     let SESSION_ID = localStorage.getItem('xin_session_id');
 
     if (!SESSION_ID) {
       if (window.crypto && crypto.randomUUID) {
         SESSION_ID = crypto.randomUUID();
       } else {
-        // 簡單備援：時間戳 + 隨機數
         SESSION_ID = 'sess-' + Date.now() + '-' + Math.floor(Math.random() * 1e9);
       }
       localStorage.setItem('xin_session_id', SESSION_ID);
@@ -264,7 +261,6 @@
 
     console.log('SESSION_ID =', SESSION_ID);
 
-    // 取得現在時間字串 HH:MM
     function getTimeString() {
       const d = new Date();
       const hh = d.getHours().toString().padStart(2, '0');
@@ -272,7 +268,6 @@
       return `${hh}:${mm}`;
     }
 
-    // 建立一則訊息 DOM
     function appendMessage(role, text, asHtml = false) {
       const row = document.createElement('div');
       row.classList.add('message-row', role);
@@ -286,9 +281,9 @@
       bubble.classList.add('message-bubble');
 
       if (asHtml) {
-        bubble.innerHTML = text;   // ✅ 讓 HTML 生效 (包含分數樣式、連結)
+        bubble.innerHTML = text;
       } else {
-        bubble.textContent = text; // ✅ 原本純文字
+        bubble.textContent = text;
       }
 
       const meta = document.createElement('div');
@@ -311,13 +306,11 @@
     }
 
 
-    // 把 API 回傳的 JSON 轉成聊天框裡的文字 (HTML)
     function formatApiResponse(resp) {
       if (!resp || typeof resp !== 'object') {
         return '（系統沒有回傳可顯示的資訊）';
       }
 
-      // ① advice 類型（心理建議回答）
       if (resp.type === 'advice') {
         const lines = [];
 
@@ -333,13 +326,12 @@
           (sec.items || []).forEach((item, idx) => {
             lines.push(`  ${idx + 1}. ${item}`);
           });
-          lines.push(''); // 空一行
+          lines.push('');
         });
 
         return lines.join('\n');
       }
 
-      // ② 心據點查詢
       if (resp.type === 'xin_points') {
         const addr = resp.address || '（未指定地址）';
         const points = resp.points || [];
@@ -370,12 +362,10 @@
         return lines.join('\n');
       }
 
-      // ③ 課程 / 文章推薦 (在這裡加入分數顯示)
       if (resp.type === 'course_recommendation') {
         const lines = [];
         const results = resp.results || [];
 
-        // ✅ 先顯示總覽
         if (resp.video_count == 0)
           lines.push(`📚 共找到 ${resp.total} 筆內容（📄 文章 ${resp.article_count}）`);
         else if (resp.article_count == 0)
@@ -397,15 +387,12 @@
           const title = item.title || '(無標題)';
           const kind = item.type === 'article' ? '文章' : '影片';
           
-          // ✨✨✨ 新增：分數顯示邏輯 ✨✨✨
           let scoreHtml = '';
           if (item.score !== undefined) {
-             // 格式：紅字粗體顯示 (★分數)
              scoreHtml = ` <span style="color: #e53e3e; font-weight: bold; font-size: 0.9em;">(★${Number(item.score).toFixed(1)})</span>`;
           }
 
           lines.push('');
-          // 在標題後方插入 scoreHtml
           lines.push(`${idx + 1}. 【${kind}】${sec ? '【' + sec + '】' : ''}${title}${scoreHtml}`);
 
           if (item.type === 'video') {
@@ -421,18 +408,14 @@
           }
         });
 
-        // ✅ 有下一頁就提示
         if (resp.has_more) {
           lines.push('');
           lines.push('👉 輸入「給我後五個」可以看更多');
         }
 
-        // ✅ 回傳 HTML（把換行轉 br）
         return lines.join('\n').replace(/\n/g, '<br>');
       }
 
-
-      // ④ fallback
       return '系統回應：\n' + JSON.stringify(resp, null, 2);
     }
 
@@ -457,7 +440,6 @@
 
     async function loadHistory() {
       try {
-        // ✨✨✨ 修正：帶上 session_id 才能抓對紀錄 ✨✨✨
         const res = await fetch(`${API_BASE}/history?session_id=${SESSION_ID}`);
         if (!res.ok) {
           console.warn('載入歷史失敗：', res.status);
@@ -466,7 +448,6 @@
         const data = await res.json();
         const items = data.items || [];
 
-        // 依序把歷史紀錄畫出來
         for (const item of items) {
           if (item.query) {
             appendMessage('user', item.query);
@@ -509,7 +490,6 @@
       chatInputEl.style.height = chatInputEl.scrollHeight + 'px';
     }
 
-    // 事件綁定
     sendBtnEl.addEventListener('click', sendMessage);
 
     chatInputEl.addEventListener('keydown', (e) => {
@@ -521,7 +501,6 @@
 
     chatInputEl.addEventListener('input', autoResizeTextarea);
 
-    // 初始化：先載入歷史，再補一則歡迎訊息（如果完全沒有紀錄）
     async function initChat() {
       await loadHistory();
 
