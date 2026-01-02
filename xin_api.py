@@ -1,10 +1,11 @@
 import json
 import re
 import os
-import requests  # <--- 改用 requests，避開 422 錯誤
+import requests
 from pathlib import Path
 from typing import List, Dict, Any
 import numpy as np
+from math import radians, sin, cos, asin, sqrt
 
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -13,7 +14,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from typing import Optional
 
-# --- 設定 ---
 CITY_PATTERN = (
     r"(台北市|臺北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|"
     r"基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|"
@@ -25,15 +25,12 @@ TOP_K = 5
 XIN_POINTS_FILE = Path("xin_points.json")
 UNITS_FILE = Path("wellbeing_elearn_pro_all_with_articles.json")
 
-# --- 向量相關 ---
 VECTORS_FILE = Path("vectors.json")
 CORPUS_VECTORS = None 
 
-# --- Jina API 設定 ---
 JINA_API_URL = "https://api.jina.ai/v1/embeddings"
-JINA_API_KEY = None # 會從環境變數讀取
+JINA_API_KEY = None
 
-# --- 關鍵字設定 ---
 KEYWORDS_FILE = Path("keywords.json")
 KEYWORDS_DATA = {} 
 MENTAL_KEYWORDS = [] 
@@ -57,18 +54,15 @@ def load_keywords_from_json():
 
 load_keywords_from_json()
 
-# --- Jina 向量功能 (改用 requests) ---
 def init_vector_model():
     global CORPUS_VECTORS, JINA_API_KEY
     
-    # 1. 讀取 API Key
     JINA_API_KEY = os.environ.get("JINA_API_KEY")
     if not JINA_API_KEY:
         print("[init] ⚠️ 警告：找不到 JINA_API_KEY，語意搜尋將無法運作！")
     else:
         print("[init] ✅ Jina API Key 已設定")
 
-    # 2. 讀取向量檔
     if VECTORS_FILE.exists():
         print(f"[init] 正在讀取向量快取: {VECTORS_FILE} ...")
         try:
@@ -90,7 +84,6 @@ def get_jina_embedding(text):
         "Content-Type": "application/json",
         "Authorization": f"Bearer {JINA_API_KEY}"
     }
-    # Jina 規定 input 必須是 list
     data = {
         "model": "jina-embeddings-v3",
         "input": [text] 
@@ -112,23 +105,19 @@ def search_units_semantic(query: str, top_k: int = 5):
         return []
 
     try:
-        # 1. 取得 Query 向量
         query_vec_list = get_jina_embedding(query)
         if not query_vec_list:
             return []
             
         query_vec = np.array(query_vec_list, dtype="float32")
 
-        # 2. 計算相似度 (Dot Product)
         scores = np.dot(CORPUS_VECTORS, query_vec)
 
-        # 3. 排序
         top_indices = np.argsort(scores)[-top_k:][::-1]
         
         results = []
         for idx in top_indices:
             score = float(scores[idx])
-            # Jina 分數門檻 (可自行微調)
             if score > 0.25: 
                 r = dict(UNITS_CACHE[idx])
                 r["_score"] = score
@@ -139,9 +128,6 @@ def search_units_semantic(query: str, top_k: int = 5):
     except Exception as e:
         print(f"[search] 向量搜尋發生錯誤: {e}")
         return []
-
-
-# --- 以下為原本的輔助函式 ---
 
 def detect_pagination_intent(q: str) -> bool:
     return any(w in q for w in ["給我後五個","給我下五個","後五個","下五個","下一頁","更多推薦"])
@@ -306,7 +292,9 @@ def haversine_km(lon1, lat1, lon2, lat2) -> float:
     return 6371 * c 
 
 def geocode_address(address: str):
-    if not address: return None
+    if not address:
+        return None
+
     def try_geocode(addr: str):
         url = "https://nominatim.openstreetmap.org/search"
         params = {"q": addr, "format": "json", "limit": 1}
@@ -316,16 +304,62 @@ def geocode_address(address: str):
             r.raise_for_status()
             data = r.json()
             if data:
-                return float(data[0]["lat"]), float(data[0]["lon"])
-        except Exception: pass
+                lat = float(data[0]["lat"])
+                lon = float(data[0]["lon"])
+                print(f"[geocode] 命中：'{addr}' -> lat={lat}, lon={lon}")
+                return lat, lon
+        except Exception as e:
+            print(f"[geocode] 錯誤：{e}")
         return None
-    
-    res = try_geocode(address)
-    if res: return res
+
+    print(f"[geocode] 嘗試：{address}")
+    result = try_geocode(address)
+    if result:
+        return result
+
     if "臺" in address:
-        res = try_geocode(address.replace("臺", "台"))
-        if res: return res
-    # 簡化嘗試... (省略部分以節省篇幅，這部分邏輯不變)
+        addr2 = address.replace("臺", "台")
+        print(f"[geocode] 嘗試：{addr2}")
+        result = try_geocode(addr2)
+        if result:
+            return result
+
+    addr3 = re.sub(r"\d+號.*", "", address)
+    if addr3 != address:
+        print(f"[geocode] 嘗試（去號）：{addr3}")
+        result = try_geocode(addr3)
+        if result:
+            return result
+
+    addr4 = re.sub(r"\d+弄.*", "", address)
+    if addr4 != address:
+        print(f"[geocode] 嘗試（去弄）：{addr4}")
+        result = try_geocode(addr4)
+        if result:
+            return result
+
+    addr5 = re.sub(r"\d+巷.*", "", address)
+    if addr5 != address:
+        print(f"[geocode] 嘗試（去巷）：{addr5}")
+        result = try_geocode(addr5)
+        if result:
+            return result
+
+    m = re.match(
+        r"(台北市|臺北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|"
+        r"基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|"
+        r"屏東縣|宜蘭縣|花蓮縣|臺東縣|台東縣|澎湖縣|金門縣|連江縣)"
+        r"(.+?(區|市|鎮|鄉))",
+        address
+    )
+    if m:
+        addr6 = m.group(1) + m.group(2)
+        print(f"[geocode] 嘗試（市+區/鄉/鎮/市）：{addr6}")
+        result = try_geocode(addr6)
+        if result:
+            return result
+
+    print(f"[geocode] 完全查不到：{address}")
     return None
 
 def find_nearby_points(lat, lon, max_km=5, top_k=5):
@@ -405,7 +439,6 @@ def build_nearby_points_response(address: str, results):
         points.append({ "title": p.get("title"), "address": p.get("address"), "tel": p.get("tel"), "distance_km": round(d, 2) })
     return { "type": "xin_points", "address": address, "points": points }
 
-# --- 全域混合搜尋 (Chat 和 Recommend 通用) ---
 def execute_hybrid_search(search_query: str) -> List[Dict[str, Any]]:
     print(f"[hybrid] 開始搜尋: {search_query}")
     kw_results = search_units(UNITS_CACHE, search_query, top_k=9999)
@@ -431,8 +464,6 @@ def execute_hybrid_search(search_query: str) -> List[Dict[str, Any]]:
     final_results.sort(key=lambda x: x["_score"], reverse=True)
     return final_results
 
-
-# ---------- App 啟動 ----------
 app = FastAPI(title="心快活課程推薦 API")
 
 app.add_middleware(
@@ -445,7 +476,7 @@ def serve_index():
     return FileResponse("static/index.html")
 
 UNITS_CACHE = load_all_units()
-init_vector_model() # 載入向量
+init_vector_model()
 
 HISTORY: Dict[str, List[Dict[str, Any]] ] = {}
 
@@ -486,7 +517,6 @@ def chat(req: ChatRequest):
 
     resp = {}
 
-    # A. 地址搜尋
     if ("附近" in q) and ("心據點" in q or "看診" in q or "門診" in q):
         addr = extract_address_from_query(q)
         if not addr: resp = {"type": "xin_points", "address": None, "points": [], "message": "我有點抓不到地址，請嘗試輸入完整地址"}
@@ -498,7 +528,6 @@ def chat(req: ChatRequest):
                 results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
                 resp = build_nearby_points_response(addr, results)
 
-    # B. 完整地址
     elif ADDR_HEAD_RE.match(q):
         geo = geocode_address(q)
         if not geo: resp = {"type": "xin_points", "address": q, "points": [], "message": f"查不到「{q}」這個地址"}
@@ -507,7 +536,6 @@ def chat(req: ChatRequest):
             results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
             resp = build_nearby_points_response(q, results)
 
-    # C. 分頁
     elif detect_pagination_intent(q):
         history = HISTORY.get(session_id, [])
         last = next((h for h in reversed(history) if h["response"].get("type") == "course_recommendation"), None)
@@ -524,7 +552,6 @@ def chat(req: ChatRequest):
             resp["filter_type"] = prev_filter
             resp["query_raw"] = prev_query
 
-    # D. 媒體切換
     elif media_pref_check and not q_cleaned:
         history = HISTORY.get(session_id, [])
         last = next((h for h in reversed(history) if isinstance(h.get("response"), dict) and h["response"].get("type") == "course_recommendation"), None)
@@ -541,7 +568,6 @@ def chat(req: ChatRequest):
             resp["query_raw"] = original_topic
             if not resp["results"]: resp["message"] = f"關於「{original_topic}」目前沒有相關的內容。"
 
-    # E. 一般搜尋
     else:
         search_q = q_cleaned if q_cleaned else q
         full_results = execute_hybrid_search(search_q)
@@ -583,7 +609,6 @@ def recommend(req: RecommendRequest):
     if any(w in q for w in ["文章"]): pref = "article"
     elif any(w in q for w in ["影片"]): pref = "video"
     
-    # 直接使用混合搜尋
     full_results = execute_hybrid_search(q)
     
     if pref == "article": full_results = [r for r in full_results if r.get("is_article")]
