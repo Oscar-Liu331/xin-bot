@@ -376,7 +376,12 @@
         const results = resp.results || [];
 
         // ✅ 先顯示總覽
-        lines.push(`📚 共找到 ${resp.total} 筆內容（🎥 影片 ${resp.video_count}、📄 文章 ${resp.article_count}）`);
+        if (resp.video_count == 0)
+          lines.push(`📚 共找到 ${resp.total} 筆內容（📄 文章 ${resp.article_count}）`);
+        else if (resp.article_count == 0)
+          lines.push(`📚 共找到 ${resp.total} 筆內容（🎥 影片 ${resp.video_count}}）`);
+        else
+          lines.push(`📚 共找到 ${resp.total} 筆內容（🎥 影片 ${resp.video_count}、📄 文章 ${resp.article_count}）`);
         lines.push(`目前顯示第 ${resp.offset + 1}～${Math.min(resp.offset + resp.limit, resp.total)} 筆`);
         lines.push('');
 
