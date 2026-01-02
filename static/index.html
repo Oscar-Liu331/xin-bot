@@ -410,7 +410,8 @@
 
         if (resp.has_more) {
           lines.push('');
-          lines.push('👉 輸入「給我後五個」可以看更多');
+          // 我們加入 class="auto-send-link" 和 data-msg 來儲存要發送的文字
+          lines.push('👉 點擊 <a href="#" class="auto-send-link" data-msg="給我後五個">「給我後五個」</a> 可以看更多');
         }
 
         return lines.join('\n').replace(/\n/g, '<br>');
@@ -513,7 +514,20 @@
 
       chatInputEl.focus();
     }
-
+    chatMessagesEl.addEventListener('click', (e) => {
+        // 檢查被點擊的元素是否有 'auto-send-link' 這個 class
+        if (e.target.classList.contains('auto-send-link')) {
+          e.preventDefault(); // 防止網頁跳轉
+          
+          const msg = e.target.getAttribute('data-msg');
+          if (msg) {
+            // 1. 把文字填入輸入框
+            chatInputEl.value = msg;
+            // 2. 呼叫發送函式
+            sendMessage();
+          }
+        }
+      });
     initChat();
   </script>
 </body>
