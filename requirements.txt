@@ -4,3 +4,4 @@ pydantic
 requests
 openai
 numpy
+langdetect
