@@ -18,6 +18,7 @@ from typing import Optional
 from langdetect import detect, LangDetectException
 from deep_translator import GoogleTranslator
 
+# --- 常數設定 ---
 CITY_PATTERN = (
     r"(台北市|臺北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|"
     r"基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|"
@@ -40,25 +41,33 @@ KEYWORDS_DATA = {}
 MENTAL_KEYWORDS = [] 
 STOP_WORDS = []
 
+# 翻譯用快取
 TRANSLATION_CACHE = {}
 
+# --- 核心工具函式 ---
 
 def detect_language(text: str) -> str:
+    """
+    語言偵測最終版
+    """
     if not text: return "zh-TW"
     
+    # 1. [絕對優先] 檢查常見日文特徵字
     if re.search(r'[のはですがますくださいてにを気]', text):
         return "ja"
-
-    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
+    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text): # 平假名/片假名
         return "ja"
 
+    # 2. 檢查韓文
     if re.search(r'[\uac00-\ud7af]', text):
         return "ko"
 
+    # 3. 檢查純英文
     clean_text = re.sub(r'[0-9\s,.?!:;\'"()\[\]]', '', text)
     if clean_text and all(ord(c) < 128 for c in clean_text):
         return "en"
 
+    # 4. 檢查中文
     if re.search(r'[\u4e00-\u9fa5]', text):
         return "zh-TW"
 
@@ -71,9 +80,6 @@ def detect_language(text: str) -> str:
         return "zh-TW"
 
 def translate_text(text: str, target: str) -> str:
-    """
-    翻譯函式
-    """
     if not text: return ""
     if target == "zh-TW" and detect_language(text) == "zh-TW":
         return text
@@ -86,7 +92,8 @@ def translate_text(text: str, target: str) -> str:
         translator = GoogleTranslator(source='auto', target=target)
         result = translator.translate(text)
         
-        if result == text and len(text) > 5 and target != "zh-TW":
+        # 防呆
+        if result == text and len(text) > 5:
              clean = re.sub(r"[【】《》「」]", " ", text).strip()
              if clean != text:
                  retry = translator.translate(clean)
@@ -341,70 +348,32 @@ def haversine_km(lon1, lat1, lon2, lat2) -> float:
     return 6371 * c 
 
 def geocode_address(address: str):
-    if not address:
-        return None
-
+    if not address: return None
     def try_geocode(addr: str):
         url = "https://nominatim.openstreetmap.org/search"
         params = {"q": addr, "format": "json", "limit": 1}
-        headers = {"User-Agent": "xin-bot/1.0"} 
+        headers = {"User-Agent": "xin-bot/1.0"}
         try:
             r = requests.get(url, params=params, headers=headers, timeout=5)
             r.raise_for_status()
             data = r.json()
             if data:
-                lat = float(data[0]["lat"])
-                lon = float(data[0]["lon"])
-                print(f"[geocode] 命中：'{addr}' -> lat={lat}, lon={lon}")
-                return lat, lon
-        except Exception as e:
-            print(f"[geocode] 錯誤：{e}")
+                return float(data[0]["lat"]), float(data[0]["lon"])
+        except Exception: pass
         return None
 
-    print(f"[geocode] 嘗試原始：{address}")
-    result = try_geocode(address)
-    if result: return result
-
-    if "台" in address:
-        addr_tai = address.replace("台", "臺")
-        print(f"[geocode] 嘗試（台->臺）：{addr_tai}")
-        result = try_geocode(addr_tai)
-        if result: return result
-    
+    res = try_geocode(address)
+    if res: return res
     if "臺" in address:
-        addr_tai = address.replace("臺", "台")
-        print(f"[geocode] 嘗試（臺->台）：{addr_tai}")
-        result = try_geocode(addr_tai)
-        if result: return result
-
-    def fuzzy_search_variations(base_addr):
-        addr_no_num = re.sub(r"\d+號.*", "", base_addr)
-        if addr_no_num != base_addr:
-            print(f"[geocode] 嘗試（去號）：{addr_no_num}")
-            res = try_geocode(addr_no_num)
-            if res: return res
-        
-        addr_no_nong = re.sub(r"\d+弄.*", "", base_addr)
-        if addr_no_nong != base_addr:
-            print(f"[geocode] 嘗試（去弄）：{addr_no_nong}")
-            res = try_geocode(addr_no_nong)
-            if res: return res
-
-        addr_no_lane = re.sub(r"\d+巷.*", "", base_addr)
-        if addr_no_lane != base_addr:
-            print(f"[geocode] 嘗試（去巷）：{addr_no_lane}")
-            res = try_geocode(addr_no_lane)
-            if res: return res
-            
-        return None
-
-    result = fuzzy_search_variations(address)
-    if result: return result
-
-    if "台" in address:
-        result = fuzzy_search_variations(address.replace("台", "臺"))
-        if result: return result
-
+        res = try_geocode(address.replace("臺", "台"))
+        if res: return res
+    
+    # 模糊搜尋
+    addr3 = re.sub(r"\d+號.*", "", address)
+    if addr3 != address:
+        res = try_geocode(addr3)
+        if res: return res
+    
     m = re.match(
         r"(台北市|臺北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|"
         r"基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|"
@@ -413,18 +382,10 @@ def geocode_address(address: str):
         address
     )
     if m:
-        city_dist = m.group(1) + m.group(2)
-        print(f"[geocode] 嘗試（僅行政區）：{city_dist}")
-        result = try_geocode(city_dist)
-        if result: return result
-        
-        if "台" in city_dist:
-            city_dist_tai = city_dist.replace("台", "臺")
-            print(f"[geocode] 嘗試（僅行政區 台->臺）：{city_dist_tai}")
-            result = try_geocode(city_dist_tai)
-            if result: return result
+        addr6 = m.group(1) + m.group(2)
+        res = try_geocode(addr6)
+        if res: return res
 
-    print(f"[geocode] 完全查不到：{address}")
     return None
 
 def find_nearby_points(lat, lon, max_km=5, top_k=5):
@@ -452,9 +413,7 @@ def build_nearby_points_response(address: str, results):
     for p, d in results:
         dest_address = p.get("address", "")
         dest_encoded = urllib.parse.quote(dest_address)
-        
         map_url = f"https://www.google.com/maps/dir/?api=1&origin={origin_encoded}&destination={dest_encoded}&hl=zh-TW"
-
         points.append({
             "title": p.get("title"),
             "address": dest_address,
@@ -484,10 +443,12 @@ def load_all_units() -> List[Dict[str, Any]]:
     print(f"[load] ✅ 共載入 {len(units)} 個單元")
     return units
 
+# --- 介面回應建構 ---
 def build_recommendations_response(query: str, results: List[Dict[str, Any]], 
                                    offset: int = 0, limit: int = TOP_K, 
                                    target_lang: str = "zh-TW"):
     
+    # 1. UI 模板
     ui = {}
     if target_lang == 'ja':
         ui = {
@@ -508,6 +469,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
             "more_btn": "👉 Click 'Next 5' for more"
         }
     else:
+        # 預設中文
         ui = {
             "not_found": "目前找不到很符合的課程，可以試著用：婆媳、壓力、憂鬱、失眠… 等詞再試試看。",
             "found_msg": "📚 共找到 {total} 筆內容（🎥 影片 {v_count}、📄 文章 {a_count}）\n目前顯示第 {start}～{end} 筆\n\n根據你的敘述，我幫你找了這些課程 / 文章：",
@@ -517,11 +479,13 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
             "more_btn": "👉 點擊 「給我後五個」 可以看更多"
         }
 
+    # 其他語言動態翻譯
     if target_lang not in ['ja', 'en', 'zh-TW']:
         for k, v in ui.items():
             if "{total}" not in v:
                 ui[k] = translate_text(v, target_lang)
 
+    # 2. 處理無結果
     if not results:
         return {
             "type": "course_recommendation", "query": query, "total": 0, "video_count": 0, "article_count": 0,
@@ -529,6 +493,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
             "message": ui["not_found"]
         }
 
+    # 3. 數據計算與 Header
     results = reorder_episode_pairs(results)
     total = len(results)
     video_count = sum(1 for r in results if not r.get("is_article"))
@@ -545,13 +510,16 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
 
     items = []
     
+    # 4. 逐筆處理
     for r in page_results:
         raw_title = r.get("title") or "(無標題)"
         raw_section = r.get("section_title") or ""
         
+        # 標題翻譯與格式
         if target_lang != "zh-TW":
             pre_trans_title = raw_title
             
+            # [補丁] 針對日文的預處理字典
             if target_lang == 'ja':
                 replacements = {
                     "銀髮族": "高齢者", "好眠": "快眠", "睡眠障礙": "睡眠障害",
@@ -559,7 +527,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
                     "如何": "いかにして", "職人": "プロ", "臨床心理師": "臨床心理士",
                     "醫師": "医師", "教授": "先生", "影片": "動画", "文章": "記事",
                     "（上）": "（前編）", "（下）": "（後編）", "與": "と", "的": "の",
-
+                    # 擴充
                     "生理期": "生理", "樂齡": "シニア", "也能": "も", "好好": "ちゃんと",
                     "診治": "診断・治療", "疾患": "病気", "力量": "力", "保健": "健康",
                     "習慣": "習慣", "總是": "いつも", "睡不好": "よく眠れない",
@@ -637,6 +605,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
 
         items.append(entry)
     
+    # Debug tag
     debug_lang = f" (Debug: UI={target_lang})" if target_lang != 'zh-TW' else ""
     
     return {
@@ -713,11 +682,12 @@ def chat(req: ChatRequest):
     session_id = req.session_id or "anonymous"
     
     history_list = HISTORY.get(session_id, [])
-    
     is_pagination = detect_pagination_intent(q_origin)
-        
+    
+    # A. 偵測當前輸入
     current_detected = detect_language(q_origin)
     
+    # B. 檢查歷史偏好
     historical_lang = "zh-TW"
     if history_list:
         for h in reversed(history_list):
@@ -726,18 +696,26 @@ def chat(req: ChatRequest):
                 historical_lang = lang
                 break
     
+    # C. 決策邏輯
     final_lang = "zh-TW"
     
-    if current_detected != "zh-TW":
-        final_lang = current_detected
-    elif historical_lang != "zh-TW":
+    # 如果是明確的日文輸入，直接用
+    if current_detected == "ja":
+        final_lang = "ja"
+    # 如果是短指令(分頁)，嘗試繼承歷史語言
+    elif is_pagination and historical_lang != "zh-TW":
         final_lang = historical_lang
-    else:
+    # 如果是明確的中文長句，切回中文
+    elif current_detected == "zh-TW" and len(q_origin) > 5 and not is_pagination:
         final_lang = "zh-TW"
+    # 其他狀況(如無法判定的短句)，如果歷史是日文，就維持日文
+    elif historical_lang == "ja":
+        final_lang = "ja"
 
     print(f">>> [/chat] Origin: {q_origin} | Detected: {current_detected} | History: {historical_lang} -> Final: {final_lang}")
 
-    if final_lang != "zh-TW":
+    # 4. 翻譯查詢 (確保中文搜尋引擎能懂)
+    if final_lang == "ja":
         q_search = translate_text(q_origin, "zh-TW")
     else:
         q_search = q_origin
