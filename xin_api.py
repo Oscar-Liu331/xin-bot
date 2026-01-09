@@ -15,6 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from typing import Optional
 
+from langdetect import detect, LangDetectException
+from deep_translator import GoogleTranslator
+
 CITY_PATTERN = (
     r"(台北市|臺北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|"
     r"基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|"
@@ -36,6 +39,36 @@ KEYWORDS_FILE = Path("keywords.json")
 KEYWORDS_DATA = {} 
 MENTAL_KEYWORDS = [] 
 STOP_WORDS = []
+
+#翻譯用
+TRANSLATION_CACHE = {}
+
+def detect_language(text: str) -> str:
+    try:
+        if not re.search(r'[a-zA-Z\u4e00-\u9fa5]', text):
+            return "zh-TW"
+        lang = detect(text)
+        if lang.startswith("zh"):
+            return "zh-TW"
+        return lang
+    except LangDetectException:
+        return "zh-TW"
+
+def translate_text(text: str, target: str) -> str:
+    if not text: return ""
+    if target == "zh-TW": return text
+    
+    cache_key = f"{text}_{target}"
+    if cache_key in TRANSLATION_CACHE:
+        return TRANSLATION_CACHE[cache_key]
+    
+    try:
+        translated = GoogleTranslator(source='auto', target=target).translate(text)
+        TRANSLATION_CACHE[cache_key] = translated
+        return translated
+    except Exception as e:
+        print(f"[Translate Error] {e}")
+        return text
 
 def load_keywords_from_json():
     global KEYWORDS_DATA, MENTAL_KEYWORDS, STOP_WORDS
@@ -388,43 +421,86 @@ def load_all_units() -> List[Dict[str, Any]]:
     print(f"[load] ✅ 共載入 {len(units)} 個單元")
     return units
 
-def build_recommendations_response(query: str, results: List[Dict[str, Any]], offset: int = 0, limit: int = TOP_K):
+def build_recommendations_response(query: str, results: List[Dict[str, Any]], 
+                                   offset: int = 0, limit: int = TOP_K, 
+                                   target_lang: str = "zh-TW"):
+    
     if not results:
+        msg = "目前找不到很符合的課程，可以試著用：婆媳、壓力、憂鬱、失眠… 等詞再試試看。"
+        if target_lang != "zh-TW":
+            msg = translate_text(msg, target_lang)
+            
         return {
             "type": "course_recommendation", "query": query, "total": 0, "video_count": 0, "article_count": 0,
             "offset": offset, "limit": limit, "has_more": False, "results": [],
-            "message": "目前找不到很符合的課程，可以試著用：婆媳、壓力、憂鬱、失眠… 等詞再試試看。"
+            "message": msg
         }
+
     results = reorder_episode_pairs(results)
     total = len(results)
     video_count = sum(1 for r in results if not r.get("is_article"))
     article_count = sum(1 for r in results if r.get("is_article"))
     page_results = results[offset: offset + limit]
+    
     items = []
+    
     for r in page_results:
-        title = r.get("title") or "(無標題)"
-        section_title = r.get("section_title") or "(未分類小節)"
+        raw_title = r.get("title") or "(無標題)"
+        raw_section = r.get("section_title") or "(未分類小節)"
+        
+        if target_lang != "zh-TW":
+            title = translate_text(raw_title, target_lang)
+            section_title = translate_text(raw_section, target_lang)
+        else:
+            title = raw_title
+            section_title = raw_section
+
         score = r.get("_score", 0.0)
         is_article = bool(r.get("is_article"))
         youtube_url = r.get("youtube_url")
+
         entry = {
-            "section_title": section_title, "title": title, "score": score,
-            "is_article": is_article, "type": "article" if is_article else "video",
+            "section_title": section_title, 
+            "title": title, 
+            "score": score,
+            "is_article": is_article, 
+            "type": "article" if is_article else "video",
         }
+
         if is_article:
             content_text = (r.get("content_text") or "").replace("\n", " ")
-            snippet = content_text[:100] + "..."
+            snippet_raw = content_text[:100] + "..."
+            
             entry["article_url"] = r.get("article_url") or r.get("url")
-            entry["snippet"] = snippet
+            
+            if target_lang != "zh-TW":
+                entry["snippet"] = translate_text(snippet_raw, target_lang)
+            else:
+                entry["snippet"] = snippet_raw
+                
         else:
             seg = r.get("_best_segment")
             if seg:
                 start_str = format_time(seg.get("start_sec", 0.0))
-                entry["hint"] = f"該單元在 {start_str} 有提到：「{seg.get('text', '')[:30]}...」"
+                seg_text = seg.get('text', '')[:30]
+                
+                hint_raw = f"該單元在 {start_str} 有提到：「{seg_text}...」"
+                
+                if target_lang != "zh-TW":
+                    entry["hint"] = translate_text(hint_raw, target_lang)
+                else:
+                    entry["hint"] = hint_raw
             else:
-                entry["hint"] = "字幕裡沒有特別命中關鍵句，可以從頭開始看。"
+                hint_raw = "字幕裡沒有特別命中關鍵句，可以從頭開始看。"
+                if target_lang != "zh-TW":
+                    entry["hint"] = translate_text(hint_raw, target_lang)
+                else:
+                    entry["hint"] = hint_raw
+            
             entry["youtube_url"] = youtube_url
+
         items.append(entry)
+
     return {
         "type": "course_recommendation", "query": query, "total": total,
         "video_count": video_count, "article_count": article_count,
@@ -520,17 +596,27 @@ def ping(): return {"status": "ok"}
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    q = req.query.strip()
+    q_origin = req.query.strip()
     session_id = req.session_id or "anonymous"
-    print(f">>> [/chat] session_id: {session_id} | query: {q}")
+    
+    user_lang = detect_language(q_origin)
+    
+    print(f">>> [/chat] session_id: {session_id} | User Lang: {user_lang} | Origin: {q_origin}")
+
+    if user_lang != "zh-TW":
+        q_search = translate_text(q_origin, "zh-TW")
+        print(f"    Translated for search: {q_search}")
+    else:
+        q_search = q_origin
 
     def detect_media_preference(text: str) -> Optional[str]:
         if any(w in text for w in ["想看文章", "給我文章", "只有文章", "文章推薦", "找文章", "只想看文章"]): return "article"
         if any(w in text for w in ["想看影片", "給我影片", "播放影片", "影音", "看影片", "youtube", "只想看影片"]): return "video"
         return None
 
-    media_pref_check = detect_media_preference(q)
-    q_cleaned = q
+    media_pref_check = detect_media_preference(q_search)
+    q_cleaned = q_search
+
     if media_pref_check == "article":
         for w in ["想看文章", "給我文章", "只有文章", "文章推薦", "找文章", "只想看文章", "文章"]: q_cleaned = q_cleaned.replace(w, "")
     elif media_pref_check == "video":
@@ -542,60 +628,91 @@ def chat(req: ChatRequest):
 
     resp = {}
 
-    if ("附近" in q) and ("心據點" in q or "看診" in q or "門診" in q):
-        addr = extract_address_from_query(q)
-        if not addr: resp = {"type": "xin_points", "address": None, "points": [], "message": "我有點抓不到地址，請嘗試輸入完整地址"}
+    if ("附近" in q_search) and ("心據點" in q_search or "看診" in q_search or "門診" in q_search):
+        addr = extract_address_from_query(q_search)
+        if not addr: 
+            msg = "我有點抓不到地址，請嘗試輸入完整地址"
+            if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
+            resp = {"type": "xin_points", "address": None, "points": [], "message": msg}
         else:
             geo = geocode_address(addr)
-            if not geo: resp = {"type": "xin_points", "address": addr, "points": [], "message": f"查不到「{addr}」這個地址"}
+            if not geo: 
+                msg = f"查不到「{addr}」這個地址"
+                if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
+                resp = {"type": "xin_points", "address": addr, "points": [], "message": msg}
             else:
                 lat, lon = geo
                 results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
                 resp = build_nearby_points_response(addr, results)
 
-    elif ADDR_HEAD_RE.match(q):
-        geo = geocode_address(q)
-        if not geo: resp = {"type": "xin_points", "address": q, "points": [], "message": f"查不到「{q}」這個地址"}
+    elif ADDR_HEAD_RE.match(q_search):
+        geo = geocode_address(q_search)
+        if not geo: 
+            msg = f"查不到「{q_search}」這個地址"
+            if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
+            resp = {"type": "xin_points", "address": q_search, "points": [], "message": msg}
         else:
             lat, lon = geo
             results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
-            resp = build_nearby_points_response(q, results)
+            resp = build_nearby_points_response(q_search, results)
 
-    elif detect_pagination_intent(q):
+    elif detect_pagination_intent(q_search):
         history = HISTORY.get(session_id, [])
         last = next((h for h in reversed(history) if h["response"].get("type") == "course_recommendation"), None)
-        if not last: resp = {"type": "text", "message": "目前沒有上一筆推薦結果，可以先問一個問題 😊"}
+        
+        if not last: 
+            msg = "目前沒有上一筆推薦結果，可以先問一個問題 😊"
+            if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
+            resp = {"type": "text", "message": msg}
         else:
             prev_resp = last["response"]
             prev_query = prev_resp.get("query_raw") or prev_resp.get("query")
             prev_filter = prev_resp.get("filter_type", None)
             new_offset = prev_resp["offset"] + prev_resp["limit"]
+            
             full_results = execute_hybrid_search(prev_query)
             if prev_filter == "article": full_results = [r for r in full_results if r.get("is_article")]
             elif prev_filter == "video": full_results = [r for r in full_results if not r.get("is_article")]
-            resp = build_recommendations_response(prev_query, full_results, offset=new_offset, limit=TOP_K)
+            
+            resp = build_recommendations_response(
+                prev_query, full_results, offset=new_offset, limit=TOP_K, 
+                target_lang=user_lang
+            )
             resp["filter_type"] = prev_filter
             resp["query_raw"] = prev_query
 
     elif media_pref_check and not q_cleaned:
         history = HISTORY.get(session_id, [])
         last = next((h for h in reversed(history) if isinstance(h.get("response"), dict) and h["response"].get("type") == "course_recommendation"), None)
+        
         if not last:
-            resp = {"type": "course_recommendation", "query": q, "total": 0, "video_count": 0, "article_count": 0, "offset": 0, "limit": TOP_K, "has_more": False, "results": [], "message": "請先輸入一個主題，例如「焦慮」或「失眠」。"}
+            msg = "請先輸入一個主題，例如「焦慮」或「失眠」。"
+            if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
+            resp = {"type": "course_recommendation", "query": q_search, "total": 0, "video_count": 0, "article_count": 0, "offset": 0, "limit": TOP_K, "has_more": False, "results": [], "message": msg}
         else:
             prev_resp = last["response"]
             original_topic = prev_resp.get("query_raw") or prev_resp.get("query")
+            
             full_results = execute_hybrid_search(original_topic)
             if media_pref_check == "article": full_results = [r for r in full_results if r.get("is_article")]
             elif media_pref_check == "video": full_results = [r for r in full_results if not r.get("is_article")]
-            resp = build_recommendations_response(original_topic, full_results, offset=0, limit=TOP_K)
+            
+            resp = build_recommendations_response(
+                original_topic, full_results, offset=0, limit=TOP_K, 
+                target_lang=user_lang
+            )
             resp["filter_type"] = media_pref_check
             resp["query_raw"] = original_topic
-            if not resp["results"]: resp["message"] = f"關於「{original_topic}」目前沒有相關的內容。"
+            
+            if not resp["results"]: 
+                msg = f"關於「{original_topic}」目前沒有相關的內容。" 
+                if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
+                resp["message"] = msg
 
     else:
-        search_q = q_cleaned if q_cleaned else q
+        search_q = q_cleaned if q_cleaned else q_search
         full_results = execute_hybrid_search(search_q)
+        
         final_filter = None
         if media_pref_check == "article":
             full_results = [r for r in full_results if r.get("is_article")]
@@ -603,14 +720,30 @@ def chat(req: ChatRequest):
         elif media_pref_check == "video":
             full_results = [r for r in full_results if not r.get("is_article")]
             final_filter = "video"
-        resp = build_recommendations_response(search_q, full_results, offset=0, limit=TOP_K)
+        
+        resp = build_recommendations_response(
+            q_origin, 
+            full_results, 
+            offset=0, 
+            limit=TOP_K, 
+            target_lang=user_lang
+        )
         resp["filter_type"] = final_filter
-        resp["query_raw"] = search_q
-        if media_pref_check and not resp["results"]: resp["message"] = f"關於「{search_q}」目前沒有相關的內容。"
+        
+        resp["query_raw"] = search_q 
+        
+        resp["detected_lang"] = user_lang
+        resp["query_search_zh"] = search_q
+
+        if media_pref_check and not resp["results"]: 
+            msg = f"關於「{search_q}」目前沒有相關的內容。"
+            if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
+            resp["message"] = msg
 
     history_list = HISTORY.setdefault(session_id, [])
-    history_list.append({"query": q, "response": resp})
+    history_list.append({"query": q_origin, "response": resp})
     if len(history_list) > 50: history_list.pop(0)
+    
     return resp
 
 @app.get("/history")
