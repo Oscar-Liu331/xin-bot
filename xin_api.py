@@ -45,62 +45,148 @@ TRANSLATION_CACHE = {}
 
 def detect_language(text: str) -> str:
     """
-    偵測語言：
-    1. 有中文 -> zh-TW
-    2. 全英文/ASCII -> en (避免誤判成荷蘭文 nl 或其他歐語)
-    3. 其他 -> 交給模型判斷
+    修正後的語言偵測邏輯：
+    1. 先檢查是否有日文假名 -> 日文 (ja)
+    2. 檢查是否有韓文 -> 韓文 (ko)
+    3. 剩下如果有漢字 -> 中文 (zh-TW)
+    4. 純英數 -> 英文 (en)
     """
     if not text: return "zh-TW"
     
-    # 1. 檢查是否包含中文字
+    # 1. [優先] 檢查日文 (平假名 \u3040-\u309f / 片假名 \u30a0-\u30ff)
+    # 日文句子通常混雜漢字與假名，只要有假名就是日文
+    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
+        return "ja"
+
+    # 2. [優先] 檢查韓文 (諺文 \uac00-\ud7af)
+    if re.search(r'[\uac00-\ud7af]', text):
+        return "ko"
+
+    # 3. 檢查中文 (漢字 \u4e00-\u9fa5)
+    # 如果沒有日文假名，但有漢字，這時候才認定是中文
     if re.search(r'[\u4e00-\u9fa5]', text):
         return "zh-TW"
 
-    # 2. 檢查是否主要為英文字母 (ASCII)
-    # 移除常見標點與數字後，如果剩下的是純拉丁字母，強制設為 en
+    # 4. 檢查純英文 (避免誤判成歐語)
     clean_text = re.sub(r'[0-9\s,.?!:;\'"()\[\]]', '', text)
     if clean_text and all(ord(c) < 128 for c in clean_text):
         return "en"
 
-    # 3. 其他情況 (如日文、韓文) 交給模型
+    # 5. 其他情況交給模型
     try:
         lang = detect(text)
         if lang.startswith("zh"): return "zh-TW"
-        # 再次防呆：如果模型判斷是 nl (荷蘭文) 但看起來像英文，強制轉 en
-        if lang == 'nl' and 'the' in text.lower():
-            return "en"
         return lang
     except LangDetectException:
         return "zh-TW"
 
-def translate_text(text: str, target: str) -> str:
-    if not text: return ""
-    if target == "zh-TW": return text
+是的，沒錯！請直接替換掉原本的 translate_text。
+
+為了讓你的程式碼不用改來改去（不用把呼叫的地方都改成 _smart），我建議直接把新邏輯寫在 translate_text 這個函式名稱下。
+
+請用下面這兩個最終修正版的函式，直接覆蓋你程式碼中最上方的對應區塊：
+
+1. 最終版 detect_language (解決日文被誤判為中文)
+這個版本加入了針對日文假名與韓文諺文的優先檢查。
+
+Python
+
+import re
+from langdetect import detect, LangDetectException
+
+def detect_language(text: str) -> str:
+    """
+    語言偵測最終版：
+    1. 優先檢查日文假名 -> ja
+    2. 優先檢查韓文諺文 -> ko
+    3. 檢查漢字 -> zh-TW
+    4. 純英數 -> en
+    """
+    if not text: return "zh-TW"
     
+    # 1. [優先] 檢查日文 (平假名 \u3040-\u309f / 片假名 \u30a0-\u30ff)
+    # 只要有假名，就一定是日文，不會誤判成中文
+    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
+        return "ja"
+
+    # 2. [優先] 檢查韓文 (諺文 \uac00-\ud7af)
+    if re.search(r'[\uac00-\ud7af]', text):
+        return "ko"
+
+    # 3. 檢查中文 (漢字 \u4e00-\u9fa5)
+    # 排除日文後，如果有漢字，這時候才認定是中文
+    if re.search(r'[\u4e00-\u9fa5]', text):
+        return "zh-TW"
+
+    # 4. 檢查純英文 (避免誤判成歐語)
+    clean_text = re.sub(r'[0-9\s,.?!:;\'"()\[\]]', '', text)
+    if clean_text and all(ord(c) < 128 for c in clean_text):
+        return "en"
+
+    # 5. 其他情況交給模型 (langdetect)
+    try:
+        lang = detect(text)
+        if lang.startswith("zh"): return "zh-TW"
+        return lang
+    except LangDetectException:
+        return "zh-TW"
+2. 最終版 translate_text (整合了智慧重試與除錯)
+請用這個函式完全取代原本的 translate_text。它包含了「去除符號重試」的機制，可以解決標題有 【 】 導致翻譯失敗的問題，也有詳細的錯誤 Log。
+
+Python
+
+from deep_translator import GoogleTranslator
+
+# 翻譯快取
+TRANSLATION_CACHE = {}
+
+def translate_text(text: str, target: str) -> str:
+    """
+    翻譯函式 (整合智慧重試機制)：
+    1. 嘗試直接翻譯。
+    2. 如果失敗 (結果與原文相同)，移除特殊符號後重試。
+    3. 印出詳細錯誤以便除錯。
+    """
+    if not text: return ""
+    # 如果目標是中文，且原文就是中文 (簡單判斷)，直接回傳
+    if target == "zh-TW" and detect_language(text) == "zh-TW":
+        return text
+    
+    # 建立快取鍵值
     cache_key = f"{text}_{target}"
     if cache_key in TRANSLATION_CACHE:
         return TRANSLATION_CACHE[cache_key]
     
-    # [新增] 預處理：為了避免翻譯失敗，嘗試移除一些特殊括號，只翻文字內容
-    # 這樣 Google 比較不會把它當作"符號圖形"而拒絕翻譯
-    text_to_translate = text
-    # 這裡可以視情況決定是否要移除括號，或者直接送出
-    # 通常長標題直接送出即可，但若失敗率高，可考慮只送核心詞
-    
     try:
-        translated = GoogleTranslator(source='auto', target=target).translate(text_to_translate)
+        translator = GoogleTranslator(source='auto', target=target)
         
-        # [新增] 防呆：如果翻譯結果跟原文一模一樣，且目標不是中文，
-        # 可能代表翻譯失敗 (API 回傳原文)，這時候回傳空字串或原文，讓後續邏輯處理
-        if translated == text and target != 'zh-TW':
-            # 這裡我們回傳原文，但在 UI 組裝時會檢查
-            pass 
+        # --- 第一試：直接翻譯 ---
+        result = translator.translate(text)
+        
+        # --- 驗證與重試機制 ---
+        # 如果翻譯結果跟原文一模一樣，且原文長度足夠，代表可能因為特殊符號導致 API 拒絕翻譯
+        if result == text and len(text) > 5:
+            # 移除常見干擾符號：【】《》「」()
+            clean_text = re.sub(r"[【】《》「」()（）]", " ", text)
+            clean_text = re.sub(r"\s+", " ", clean_text).strip() # 移除多餘空白
             
-        TRANSLATION_CACHE[cache_key] = translated
-        return translated
+            # 如果清乾淨後的文字跟原本不一樣，代表有符號被移除了，值得重試
+            if clean_text != text:
+                # print(f"[Translate Retry] 嘗試移除符號翻譯: {clean_text}") # 除錯用
+                retry_result = translator.translate(clean_text)
+                
+                # 如果重試有結果 (且不等於 cleaning text)，就採用新的
+                if retry_result != clean_text:
+                    result = retry_result
+        
+        # 寫入快取
+        TRANSLATION_CACHE[cache_key] = result
+        return result
+
     except Exception as e:
-        print(f"[Translate Error] {e}")
-        return text
+        # 印出錯誤，這樣你看 Log 才知道是不是 IP 被鎖 (429) 或網路問題
+        print(f"!!! [Translate Error] Text: {text[:10]}... | Error: {e}")
+        return text # 失敗時回傳原文，確保程式不崩潰
 
 def load_keywords_from_json():
     global KEYWORDS_DATA, MENTAL_KEYWORDS, STOP_WORDS
