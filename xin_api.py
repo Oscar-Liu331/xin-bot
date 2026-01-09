@@ -55,7 +55,7 @@ def detect_language(text: str) -> str:
     # 1. [絕對優先] 檢查常見日文特徵字
     if re.search(r'[のはですがますくださいてにを気]', text):
         return "ja"
-    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text): # 平假名/片假名
+    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
         return "ja"
 
     # 2. 檢查韓文
@@ -93,7 +93,7 @@ def translate_text(text: str, target: str) -> str:
         result = translator.translate(text)
         
         # 防呆
-        if result == text and len(text) > 5:
+        if result == text and len(text) > 5 and target != "zh-TW":
              clean = re.sub(r"[【】《》「」]", " ", text).strip()
              if clean != text:
                  retry = translator.translate(clean)
@@ -696,26 +696,20 @@ def chat(req: ChatRequest):
                 historical_lang = lang
                 break
     
-    # C. 決策邏輯
+    # C. 決策邏輯 (修正版：只有分頁指令才繼承，一般中文輸入則切回中文)
     final_lang = "zh-TW"
     
-    # 如果是明確的日文輸入，直接用
-    if current_detected == "ja":
-        final_lang = "ja"
-    # 如果是短指令(分頁)，嘗試繼承歷史語言
+    if current_detected != "zh-TW":
+        final_lang = current_detected
     elif is_pagination and historical_lang != "zh-TW":
         final_lang = historical_lang
-    # 如果是明確的中文長句，切回中文
-    elif current_detected == "zh-TW" and len(q_origin) > 5 and not is_pagination:
+    else:
         final_lang = "zh-TW"
-    # 其他狀況(如無法判定的短句)，如果歷史是日文，就維持日文
-    elif historical_lang == "ja":
-        final_lang = "ja"
 
     print(f">>> [/chat] Origin: {q_origin} | Detected: {current_detected} | History: {historical_lang} -> Final: {final_lang}")
 
-    # 4. 翻譯查詢 (確保中文搜尋引擎能懂)
-    if final_lang == "ja":
+    # 4. 翻譯查詢
+    if final_lang != "zh-TW":
         q_search = translate_text(q_origin, "zh-TW")
     else:
         q_search = q_origin
@@ -858,6 +852,7 @@ def chat(req: ChatRequest):
             if final_lang != "zh-TW": msg = translate_text(msg, final_lang)
             resp["message"] = msg
 
+    # 儲存 final_lang 到歷史紀錄
     history_list = HISTORY.setdefault(session_id, [])
     history_list.append({
         "query": q_origin, 
