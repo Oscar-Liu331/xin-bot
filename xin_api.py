@@ -54,6 +54,7 @@ def detect_language(text: str) -> str:
     if not text: return "zh-TW"
     
     # 1. [絕對優先] 檢查常見日文特徵字 (平假名)
+    # 只要出現這些字，絕對是日文
     if re.search(r'[のはですがますくださいてにを気]', text):
         return "ja"
 
