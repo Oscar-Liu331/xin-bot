@@ -18,6 +18,7 @@ from typing import Optional
 from langdetect import detect, LangDetectException
 from deep_translator import GoogleTranslator
 
+# --- 常數設定 ---
 CITY_PATTERN = (
     r"(台北市|臺北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|"
     r"基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|"
@@ -40,48 +41,10 @@ KEYWORDS_DATA = {}
 MENTAL_KEYWORDS = [] 
 STOP_WORDS = []
 
-#翻譯用
+# 翻譯用快取
 TRANSLATION_CACHE = {}
 
-def detect_language(text: str) -> str:
-    """
-    修正後的語言偵測邏輯：
-    1. 先檢查是否有日文假名 -> 日文 (ja)
-    2. 檢查是否有韓文 -> 韓文 (ko)
-    3. 剩下如果有漢字 -> 中文 (zh-TW)
-    4. 純英數 -> 英文 (en)
-    """
-    if not text: return "zh-TW"
-    
-    # 1. [優先] 檢查日文 (平假名 \u3040-\u309f / 片假名 \u30a0-\u30ff)
-    # 日文句子通常混雜漢字與假名，只要有假名就是日文
-    if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
-        return "ja"
-
-    # 2. [優先] 檢查韓文 (諺文 \uac00-\ud7af)
-    if re.search(r'[\uac00-\ud7af]', text):
-        return "ko"
-
-    # 3. 檢查中文 (漢字 \u4e00-\u9fa5)
-    # 如果沒有日文假名，但有漢字，這時候才認定是中文
-    if re.search(r'[\u4e00-\u9fa5]', text):
-        return "zh-TW"
-
-    # 4. 檢查純英文 (避免誤判成歐語)
-    clean_text = re.sub(r'[0-9\s,.?!:;\'"()\[\]]', '', text)
-    if clean_text and all(ord(c) < 128 for c in clean_text):
-        return "en"
-
-    # 5. 其他情況交給模型
-    try:
-        lang = detect(text)
-        if lang.startswith("zh"): return "zh-TW"
-        return lang
-    except LangDetectException:
-        return "zh-TW"
-
-import re
-from langdetect import detect, LangDetectException
+# --- 核心工具函式 ---
 
 def detect_language(text: str) -> str:
     """
@@ -94,7 +57,6 @@ def detect_language(text: str) -> str:
     if not text: return "zh-TW"
     
     # 1. [優先] 檢查日文 (平假名 \u3040-\u309f / 片假名 \u30a0-\u30ff)
-    # 只要有假名，就一定是日文，不會誤判成中文
     if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
         return "ja"
 
@@ -103,16 +65,15 @@ def detect_language(text: str) -> str:
         return "ko"
 
     # 3. 檢查中文 (漢字 \u4e00-\u9fa5)
-    # 排除日文後，如果有漢字，這時候才認定是中文
     if re.search(r'[\u4e00-\u9fa5]', text):
         return "zh-TW"
 
-    # 4. 檢查純英文 (避免誤判成歐語)
+    # 4. 檢查純英文
     clean_text = re.sub(r'[0-9\s,.?!:;\'"()\[\]]', '', text)
     if clean_text and all(ord(c) < 128 for c in clean_text):
         return "en"
 
-    # 5. 其他情況交給模型 (langdetect)
+    # 5. 其他情況交給模型
     try:
         lang = detect(text)
         if lang.startswith("zh"): return "zh-TW"
@@ -120,17 +81,11 @@ def detect_language(text: str) -> str:
     except LangDetectException:
         return "zh-TW"
 
-from deep_translator import GoogleTranslator
-
-# 翻譯快取
-TRANSLATION_CACHE = {}
-
 def translate_text(text: str, target: str) -> str:
     """
     翻譯函式 (整合智慧重試機制)：
     1. 嘗試直接翻譯。
     2. 如果失敗 (結果與原文相同)，移除特殊符號後重試。
-    3. 印出詳細錯誤以便除錯。
     """
     if not text: return ""
     # 如果目標是中文，且原文就是中文 (簡單判斷)，直接回傳
@@ -157,10 +112,7 @@ def translate_text(text: str, target: str) -> str:
             
             # 如果清乾淨後的文字跟原本不一樣，代表有符號被移除了，值得重試
             if clean_text != text:
-                # print(f"[Translate Retry] 嘗試移除符號翻譯: {clean_text}") # 除錯用
                 retry_result = translator.translate(clean_text)
-                
-                # 如果重試有結果 (且不等於 cleaning text)，就採用新的
                 if retry_result != clean_text:
                     result = retry_result
         
@@ -169,9 +121,8 @@ def translate_text(text: str, target: str) -> str:
         return result
 
     except Exception as e:
-        # 印出錯誤，這樣你看 Log 才知道是不是 IP 被鎖 (429) 或網路問題
         print(f"!!! [Translate Error] Text: {text[:10]}... | Error: {e}")
-        return text # 失敗時回傳原文，確保程式不崩潰
+        return text # 失敗時回傳原文
 
 def load_keywords_from_json():
     global KEYWORDS_DATA, MENTAL_KEYWORDS, STOP_WORDS
@@ -528,89 +479,100 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
                                    offset: int = 0, limit: int = TOP_K, 
                                    target_lang: str = "zh-TW"):
     
-    # 定義 UI 模板
-    ui_texts = {
-        "not_found": "目前找不到很符合的課程，可以試著用：婆媳、壓力、憂鬱、失眠… 等詞再試試看。",
-        "found_pattern": "共找到 {total} 筆內容（🎥 影片 {v_count}、📄 文章 {a_count}）", # 改用 format 格式較好管理
-        "showing": "目前顯示第",
-        "intro": "根據你的敘述，我幫你找了這些課程 / 文章：",
-        "hint_prefix": "💡 小提醒：",
-        "hint_default": "字幕裡沒有特別命中關鍵句，可以從頭開始看。",
-        "video_link": "🎥 影片連結：",
-        "more_btn": "👉 點擊 「給我後五個」 可以看更多"
-    }
-
-    # 翻譯 UI 文字
-    if target_lang != "zh-TW":
-        # 針對句子進行翻譯
-        ui_texts["not_found"] = translate_text(ui_texts["not_found"], target_lang)
-        ui_texts["intro"] = translate_text(ui_texts["intro"], target_lang)
-        ui_texts["hint_default"] = translate_text(ui_texts["hint_default"], target_lang)
-        ui_texts["more_btn"] = translate_text(ui_texts["more_btn"], target_lang)
+    # --- 1. 定義介面文字 (使用 Hardcode 保證翻譯品質) ---
+    if target_lang == 'en':
+        ui = {
+            "not_found": "Currently no relevant courses found. You can try keywords like: stress, insomnia, depression...",
+            "found_pattern": "Found {total} results (🎥 Video {v_count}, 📄 Article {a_count})",
+            "showing": "Showing items",
+            "intro": "Based on your description, I found these courses/articles:",
+            "hint_prefix": "Tips: ",
+            "hint_default": "No specific keywords found in subtitles, you can watch from the beginning.",
+            "video_link": "🎥 Link: ",
+            "more_btn": "👉 Click 'Next 5' for more"
+        }
+    elif target_lang == 'ja':
+        # [新增] 日文介面 hardcode
+        ui = {
+            "not_found": "条件に合うコンテンツが見つかりませんでした。「ストレス」、「不眠」、「不安」などのキーワードで試してみてください。",
+            "found_pattern": "合計 {total} 件見つかりました（🎥 動画 {v_count}、📄 記事 {a_count}）",
+            "showing": "表示中: ",
+            "intro": "ご相談内容に基づき、以下のコース/記事を検索しました：",
+            "hint_prefix": "ヒント: ",
+            "hint_default": "字幕に特定のキーワードは見つかりませんでした。最初からご覧ください。",
+            "video_link": "🎥 リンク: ",
+            "more_btn": "👉 「次の5件」をクリックしてもっと見る"
+        }
+    else:
+        # 預設中文
+        ui = {
+            "not_found": "目前找不到很符合的課程，可以試著用：婆媳、壓力、憂鬱、失眠… 等詞再試試看。",
+            "found_pattern": "共找到 {total} 筆內容（🎥 影片 {v_count}、📄 文章 {a_count}）",
+            "showing": "目前顯示第",
+            "intro": "根據你的敘述，我幫你找了這些課程 / 文章：",
+            "hint_prefix": "💡 小提醒：",
+            "hint_default": "字幕裡沒有特別命中關鍵句，可以從頭開始看。",
+            "video_link": "🎥 影片連結：",
+            "more_btn": "👉 點擊 「給我後五個」 可以看更多"
+        }
         
-        # 針對短詞翻譯 (標籤)
-        ui_texts["hint_prefix"] = translate_text("Tips: ", target_lang) # 直接翻 Tips 比較簡短
-        ui_texts["video_link"] = translate_text("Video Link: ", target_lang)
-        ui_texts["showing"] = translate_text("Showing items", target_lang)
-        
-        # 複雜的統計字串，建議直接翻譯整個模板概念，或者簡單替換
-        # 這裡為了簡單，我們動態組裝英文版
-        if target_lang == 'en':
-            ui_texts["found_pattern"] = "Found {total} results (🎥 Video {v_count}, 📄 Article {a_count})"
-        else:
-            # 其他語言用翻譯的
-            base_msg = "共找到 {total} 筆內容"
-            trans_base = translate_text(base_msg, target_lang)
-            # 簡單替換 placeholder，避免翻譯軟體吃掉變數
-            ui_texts["found_pattern"] = trans_base # 簡化顯示，避免變數跑版
+        # 如果是其他語言 (韓文/歐語等)，才使用即時翻譯
+        if target_lang != "zh-TW":
+            for k, v in ui.items():
+                if "{total}" not in v: # 簡單字串直接翻
+                    ui[k] = translate_text(v, target_lang)
 
-    # --- 1. 處理無結果 ---
+    # --- 2. 處理無結果 ---
     if not results:
         return {
             "type": "course_recommendation", "query": query, "total": 0, "video_count": 0, "article_count": 0,
             "offset": offset, "limit": limit, "has_more": False, "results": [],
-            "message": ui_texts["not_found"]
+            "message": ui["not_found"]
         }
 
-    # --- 2. 數據計算 ---
+    # --- 3. 數據計算與 Header ---
     results = reorder_episode_pairs(results)
     total = len(results)
     video_count = sum(1 for r in results if not r.get("is_article"))
     article_count = sum(1 for r in results if r.get("is_article"))
     page_results = results[offset: offset + limit]
     
-    # 格式化 Header
+    # 根據語言組裝 Header
     if target_lang == 'en':
         header_msg = (
-            f"{ui_texts['found_pattern'].format(total=total, v_count=video_count, a_count=article_count)}\n"
-            f"{ui_texts['showing']} {offset + 1}-{min(offset + limit, total)}\n\n"
-            f"{ui_texts['intro']}"
+            f"📚 {ui['found_pattern'].format(total=total, v_count=video_count, a_count=article_count)}\n"
+            f"{ui['showing']} {offset + 1}-{min(offset + limit, total)}\n\n"
+            f"{ui['intro']}"
+        )
+    elif target_lang == 'ja':
+        header_msg = (
+            f"📚 {ui['found_pattern'].format(total=total, v_count=video_count, a_count=article_count)}\n"
+            f"{ui['showing']} {offset + 1}～{min(offset + limit, total)} 件\n\n"
+            f"{ui['intro']}"
         )
     else:
-        # 中文或其他語言保留原格式
         header_msg = (
-            f"📚 {ui_texts['found_pattern'].format(total=total, v_count=video_count, a_count=article_count)}\n"
-            f"{ui_texts['showing']} {offset + 1}～{min(offset + limit, total)} 筆\n\n"
-            f"{ui_texts['intro']}"
+            f"📚 {ui['found_pattern'].format(total=total, v_count=video_count, a_count=article_count)}\n"
+            f"{ui['showing']} {offset + 1}～{min(offset + limit, total)} 筆\n\n"
+            f"{ui['intro']}"
         )
 
     items = []
     
-    # --- 3. 逐筆處理 ---
+    # --- 4. 逐筆處理 ---
     for r in page_results:
-        raw_title = r.get("title") or "(無標題)"
+        raw_title = r.get("title") or "(Untitled)"
         raw_section = r.get("section_title") or ""
         
-        # [核心修改] 避免重複顯示 "中文 [中文]"
+        # 標題處理
         if target_lang != "zh-TW":
             trans_title = translate_text(raw_title, target_lang)
             
-            # 只有當翻譯結果跟原文「不一樣」時，才顯示括號
-            # 並且簡單檢查長度，避免翻譯失敗回傳了空字串
+            # 檢查翻譯是否有效 (不為空 且 不等於原文)
             if trans_title and trans_title != raw_title:
-                display_title = f"{raw_title} \n   [{trans_title}]" # 換行比較整齊
+                display_title = f"{raw_title}\n   [{trans_title}]"
             else:
-                display_title = raw_title # 翻譯失敗或相同，只顯示原文
+                display_title = raw_title
             
             if raw_section:
                 trans_section = translate_text(raw_section, target_lang)
@@ -643,30 +605,35 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
             
             if target_lang != "zh-TW":
                 trans_snippet = translate_text(snippet_raw, target_lang)
-                entry["snippet"] = trans_snippet if trans_snippet != snippet_raw else snippet_raw
+                entry["snippet"] = trans_snippet
             else:
                 entry["snippet"] = snippet_raw     
         else:
+            # 處理影片提示語
             seg = r.get("_best_segment")
             if seg:
                 start_str = format_time(seg.get("start_sec", 0.0))
                 seg_text = seg.get('text', '')[:30]
                 
-                if target_lang != "zh-TW":
-                    # 英文模式: "Mentioned at 00:15: ..."
+                # 若是英日文，使用翻譯並 Hardcode 結構
+                if target_lang == "en":
                     trans_seg = translate_text(seg_text, target_lang)
-                    # 這裡不要重複 hint_prefix，只組裝內容
                     hint_body = f"Mentioned at {start_str}: \"{trans_seg}...\""
+                elif target_lang == "ja":
+                    trans_seg = translate_text(seg_text, target_lang)
+                    hint_body = f"{start_str} にて言及: 「{trans_seg}...」"
+                elif target_lang != "zh-TW":
+                    trans_seg = translate_text(seg_text, target_lang)
+                    hint_body = f"{start_str}: \"{trans_seg}...\""
                 else:
                     hint_body = f"該單元在 {start_str} 有提到：「{seg_text}...」"
             else:
-                hint_body = ui_texts["hint_default"]
+                # 這裡會用到上方定義好的 ui["hint_default"] (已經是日文了)
+                hint_body = ui["hint_default"]
             
-            # [修正] 這裡確保不會重複 "小提醒"
-            # 前端如果已經有顯示 icon，這裡就純文字，或者連同 label 一起給
-            entry["hint"] = f"{ui_texts['hint_prefix']} {hint_body}"
+            entry["hint"] = f"{ui['hint_prefix']} {hint_body}"
             entry["youtube_url"] = youtube_url
-            entry["link_label"] = ui_texts["video_link"] 
+            entry["link_label"] = ui["video_link"] 
 
         items.append(entry)
     
@@ -681,7 +648,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
         "has_more": offset + limit < total,
         "results": items,
         "header_text": header_msg, 
-        "message": ui_texts["more_btn"] if (offset + limit < total) else "" 
+        "message": ui["more_btn"] if (offset + limit < total) else "" 
     }
 
 def build_nearby_points_response(address: str, results):
