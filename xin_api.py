@@ -80,17 +80,6 @@ def detect_language(text: str) -> str:
     except LangDetectException:
         return "zh-TW"
 
-是的，沒錯！請直接替換掉原本的 translate_text。
-
-為了讓你的程式碼不用改來改去（不用把呼叫的地方都改成 _smart），我建議直接把新邏輯寫在 translate_text 這個函式名稱下。
-
-請用下面這兩個最終修正版的函式，直接覆蓋你程式碼中最上方的對應區塊：
-
-1. 最終版 detect_language (解決日文被誤判為中文)
-這個版本加入了針對日文假名與韓文諺文的優先檢查。
-
-Python
-
 import re
 from langdetect import detect, LangDetectException
 
@@ -130,10 +119,6 @@ def detect_language(text: str) -> str:
         return lang
     except LangDetectException:
         return "zh-TW"
-2. 最終版 translate_text (整合了智慧重試與除錯)
-請用這個函式完全取代原本的 translate_text。它包含了「去除符號重試」的機制，可以解決標題有 【 】 導致翻譯失敗的問題，也有詳細的錯誤 Log。
-
-Python
 
 from deep_translator import GoogleTranslator
 
