@@ -356,25 +356,107 @@ def haversine_km(lon1, lat1, lon2, lat2) -> float:
     return 6371 * c 
 
 def geocode_address(address: str):
-    if not address: return None
+    if not address:
+        return None
+
+    # 定義內部函式：發送請求
     def try_geocode(addr: str):
+        # 這裡建議加上 User-Agent email 以符合 Nominatim 規範，避免被擋
         url = "https://nominatim.openstreetmap.org/search"
         params = {"q": addr, "format": "json", "limit": 1}
-        headers = {"User-Agent": "xin-bot/1.0"}
+        headers = {"User-Agent": "xin-bot/1.0"} 
         try:
             r = requests.get(url, params=params, headers=headers, timeout=5)
             r.raise_for_status()
             data = r.json()
             if data:
-                return float(data[0]["lat"]), float(data[0]["lon"])
-        except Exception: pass
+                lat = float(data[0]["lat"])
+                lon = float(data[0]["lon"])
+                print(f"[geocode] 命中：'{addr}' -> lat={lat}, lon={lon}")
+                return lat, lon
+        except Exception as e:
+            print(f"[geocode] 錯誤：{e}")
         return None
 
-    res = try_geocode(address)
-    if res: return res
+    # --- 策略 1: 原始地址直接查 ---
+    print(f"[geocode] 嘗試原始：{address}")
+    result = try_geocode(address)
+    if result: return result
+
+    # --- 策略 2: 處理「台」與「臺」的互換 (這是最常見的問題) ---
+    # 如果輸入是 "台"，試試看 "臺" (OSM 通常用這個)
+    if "台" in address:
+        addr_tai = address.replace("台", "臺")
+        print(f"[geocode] 嘗試（台->臺）：{addr_tai}")
+        result = try_geocode(addr_tai)
+        if result: return result
+    
+    # 如果輸入是 "臺"，試試看 "台" (容錯)
     if "臺" in address:
-        res = try_geocode(address.replace("臺", "台"))
-        if res: return res
+        addr_tai = address.replace("臺", "台")
+        print(f"[geocode] 嘗試（臺->台）：{addr_tai}")
+        result = try_geocode(addr_tai)
+        if result: return result
+
+    # --- 策略 3: 模糊搜尋 (去除門牌、弄、巷) ---
+    # 定義一個針對變體地址進行模糊處理的函式
+    def fuzzy_search_variations(base_addr):
+        # 3.1 去除號 (例如 "大學路1號" -> "大學路")
+        addr_no_num = re.sub(r"\d+號.*", "", base_addr)
+        if addr_no_num != base_addr:
+            print(f"[geocode] 嘗試（去號）：{addr_no_num}")
+            res = try_geocode(addr_no_num)
+            if res: return res
+        
+        # 3.2 去除弄
+        addr_no_nong = re.sub(r"\d+弄.*", "", base_addr)
+        if addr_no_nong != base_addr:
+            print(f"[geocode] 嘗試（去弄）：{addr_no_nong}")
+            res = try_geocode(addr_no_nong)
+            if res: return res
+
+        # 3.3 去除巷
+        addr_no_lane = re.sub(r"\d+巷.*", "", base_addr)
+        if addr_no_lane != base_addr:
+            print(f"[geocode] 嘗試（去巷）：{addr_no_lane}")
+            res = try_geocode(addr_no_lane)
+            if res: return res
+            
+        return None
+
+    # 對「原始地址」做模糊搜尋
+    result = fuzzy_search_variations(address)
+    if result: return result
+
+    # 對「台->臺 轉換後的地址」做模糊搜尋 (這一步很重要！)
+    if "台" in address:
+        result = fuzzy_search_variations(address.replace("台", "臺"))
+        if result: return result
+
+    # --- 策略 4: 最後手段，只查縣市+行政區 ---
+    # 例如 "台南市東區..." -> "台南市東區"
+    m = re.match(
+        r"(台北市|臺北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|"
+        r"基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|"
+        r"屏東縣|宜蘭縣|花蓮縣|臺東縣|台東縣|澎湖縣|金門縣|連江縣)"
+        r"(.+?(區|市|鎮|鄉))",
+        address
+    )
+    if m:
+        # 取得 "台南市東區"
+        city_dist = m.group(1) + m.group(2)
+        print(f"[geocode] 嘗試（僅行政區）：{city_dist}")
+        result = try_geocode(city_dist)
+        if result: return result
+        
+        # 同樣要試試看 "臺南市東區"
+        if "台" in city_dist:
+            city_dist_tai = city_dist.replace("台", "臺")
+            print(f"[geocode] 嘗試（僅行政區 台->臺）：{city_dist_tai}")
+            result = try_geocode(city_dist_tai)
+            if result: return result
+
+    print(f"[geocode] 完全查不到：{address}")
     return None
 
 def find_nearby_points(lat, lon, max_km=5, top_k=5):
