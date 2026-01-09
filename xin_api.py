@@ -521,7 +521,8 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
                                    offset: int = 0, limit: int = TOP_K, 
                                    target_lang: str = "zh-TW"):
     
-    # 1. UI 模板定義 (確保日文有被定義)
+    # 1. 強制定義 UI 模板 (Hardcode)
+    # 這裡直接寫死日文，不透過翻譯 API，確保 100% 顯示日文
     ui = {}
     if target_lang == 'ja':
         ui = {
@@ -576,7 +577,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
     start_idx = offset + 1
     end_idx = min(offset + limit, total)
     
-    # [絕對修正] 直接使用 ui dict 中的 found_msg，確保語言一致
+    # 使用選定好的 ui 模板
     header_msg = ui["found_msg"].format(
         total=total, v_count=video_count, a_count=article_count,
         start=start_idx, end=end_idx
@@ -594,6 +595,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
             pre_trans_title = raw_title
             
             # [強制替換] 針對日文的預處理字典，大幅擴充詞彙
+            # 這是解決「生理期」、「樂齡」不翻譯的關鍵
             if target_lang == 'ja':
                 replacements = {
                     "銀髮族": "高齢者", "好眠": "快眠", "睡眠障礙": "睡眠障害",
@@ -601,7 +603,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
                     "如何": "いかにして", "職人": "プロ", "臨床心理師": "臨床心理士",
                     "醫師": "医師", "教授": "先生", "影片": "動画", "文章": "記事",
                     "（上）": "（前編）", "（下）": "（後編）", "與": "と", "的": "の",
-                    # 擴充
+                    # 擴充補丁 (針對你回報沒翻譯的詞)
                     "生理期": "生理", "樂齡": "シニア", "也能": "も", "好好": "ちゃんと",
                     "診治": "診断・治療", "疾患": "病気", "力量": "力", "保健": "健康",
                     "習慣": "習慣", "總是": "いつも", "睡不好": "よく眠れない",
@@ -613,6 +615,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
                 for zh_term, ja_term in replacements.items():
                     pre_trans_title = pre_trans_title.replace(zh_term, ja_term)
                 
+                # 處理括號
                 pre_trans_title = pre_trans_title.replace("【", "[").replace("】", "] ")
 
             trans_title = translate_text(pre_trans_title, target_lang)
@@ -672,6 +675,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
                 else:
                     hint_body = f"該單元在 {start_str} 有提到：「{seg_text}...」"
             else:
+                # 這裡會使用 ui_ja 或 ui_en 中的預設文字
                 hint_body = ui["hint_default"]
             
             entry["hint"] = f"{ui['hint_prefix']} {hint_body}"
@@ -680,8 +684,8 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
 
         items.append(entry)
     
-    # 底部加上 debug 標籤，方便確認後端判斷的語言
-    debug_lang = f" (Debug: User={target_lang})" if target_lang != 'zh-TW' else ""
+    # 底部加上 debug 標籤，方便確認後端判斷的語言 (上線後可移除)
+    debug_lang = f" (Debug: UI={target_lang})" if target_lang != 'zh-TW' else ""
     
     return {
         "type": "course_recommendation", 
@@ -763,8 +767,8 @@ def chat(req: ChatRequest):
     is_pagination = detect_pagination_intent(q_origin)
     
     # 3. [最強制語言鎖定]
-    # 邏輯：先檢查歷史紀錄裡有沒有人講過外語 (ja/en/ko)。
-    # 如果有，不管這次使用者說什麼 (因為可能是點擊了中文按鈕)，都強制使用該外語。
+    # 邏輯：先偵測當前輸入，如果當前是中文，就去翻歷史紀錄看有沒有外語。
+    # 只要有外語紀錄，就強制繼承，不讓按鈕把語言切回中文。
     
     # A. 偵測當前輸入
     current_detected = detect_language(q_origin)
@@ -793,7 +797,7 @@ def chat(req: ChatRequest):
 
     print(f">>> [/chat] Origin: {q_origin} | Detected: {current_detected} | History: {historical_lang} -> Final: {final_lang}")
 
-    # 4. 翻譯查詢 (如果需要)
+    # 4. 翻譯查詢 (如果最終判定是外語，把輸入翻成中文去搜尋)
     if final_lang != "zh-TW":
         q_search = translate_text(q_origin, "zh-TW")
     else:
@@ -868,7 +872,7 @@ def chat(req: ChatRequest):
                 if prev_filter == "article": full_results = [r for r in full_results if r.get("is_article")]
                 elif prev_filter == "video": full_results = [r for r in full_results if not r.get("is_article")]
                 
-                # [關鍵修正] 傳入 final_lang (鎖定的語言)
+                # [關鍵修正] 傳入計算好的 final_lang
                 resp = build_recommendations_response(
                     prev_query, full_results, offset=new_offset, limit=TOP_K, 
                     target_lang=final_lang
@@ -938,7 +942,7 @@ def chat(req: ChatRequest):
             if final_lang != "zh-TW": msg = translate_text(msg, final_lang)
             resp["message"] = msg
 
-    # 儲存 final_lang 到歷史紀錄，供下一輪繼承
+    # 儲存 final_lang 到歷史紀錄，確保下一輪能正確繼承
     history_list = HISTORY.setdefault(session_id, [])
     history_list.append({
         "query": q_origin, 
