@@ -83,53 +83,35 @@ def detect_language(text: str) -> str:
 
 def translate_text(text: str, target: str) -> str:
     """
-    翻譯函式 (整合智慧重試機制)：
-    1. 若是日文目標，先嘗試移除符號再翻 (提高準確度)。
-    2. 整合快取。
+    翻譯函式
     """
     if not text: return ""
-    # 如果目標是中文，且原文就是中文 (簡單判斷)，直接回傳
+    # 如果目標是中文，且原文就是中文，直接回傳
     if target == "zh-TW" and detect_language(text) == "zh-TW":
         return text
     
-    # 建立快取鍵值
     cache_key = f"{text}_{target}"
     if cache_key in TRANSLATION_CACHE:
         return TRANSLATION_CACHE[cache_key]
     
     try:
         translator = GoogleTranslator(source='auto', target=target)
+        result = translator.translate(text)
         
-        # [優化] 針對日文翻譯，為了避免 API 把 "【影片】" 當作不需翻譯的符號，
-        # 我們優先送出乾淨的文字，這樣 "女性與睡眠障礙" 的 "與" 比較容易被翻成 "と"
-        text_to_translate = text
-        if target == 'ja':
+        # 簡單防呆：如果翻譯失敗回傳原文，且原文有長度，嘗試移除符號重試
+        if result == text and len(text) > 5 and target != "zh-TW":
              # 移除常見干擾符號
-            clean_text = re.sub(r"[【】《》「」()（）]", " ", text)
-            clean_text = re.sub(r"\s+", " ", clean_text).strip()
-            if clean_text:
-                text_to_translate = clean_text
+             clean = re.sub(r"[【】《》「」]", " ", text).strip()
+             if clean != text:
+                 retry = translator.translate(clean)
+                 if retry != clean:
+                     result = retry
 
-        # 執行翻譯
-        result = translator.translate(text_to_translate)
-        
-        # 防呆：如果翻譯失敗 (結果跟原文完全一樣，且長度足夠)
-        # 且我們還沒試過移除符號 (即非日文模式)，則嘗試移除符號重試
-        if result == text_to_translate and len(text) > 5 and target != 'ja':
-             clean_text = re.sub(r"[【】《》「」()（）]", " ", text)
-             clean_text = re.sub(r"\s+", " ", clean_text).strip()
-             if clean_text != text:
-                retry_result = translator.translate(clean_text)
-                if retry_result != clean_text:
-                    result = retry_result
-        
-        # 寫入快取
         TRANSLATION_CACHE[cache_key] = result
         return result
-
     except Exception as e:
         print(f"!!! [Translate Error] Text: {text[:10]}... | Error: {e}")
-        return text # 失敗時回傳原文
+        return text 
 
 def load_keywords_from_json():
     global KEYWORDS_DATA, MENTAL_KEYWORDS, STOP_WORDS
@@ -151,7 +133,6 @@ load_keywords_from_json()
 
 def init_vector_model():
     global CORPUS_VECTORS, JINA_API_KEY
-    
     JINA_API_KEY = os.environ.get("JINA_API_KEY")
     if not JINA_API_KEY:
         print("[init] ⚠️ 警告：找不到 JINA_API_KEY，語意搜尋將無法運作！")
@@ -171,45 +152,27 @@ def init_vector_model():
         print("[init] ⚠️ 找不到 vectors.json")
 
 def get_jina_embedding(text):
-    """透過 requests 呼叫 Jina API"""
     if not JINA_API_KEY:
         raise Exception("JINA_API_KEY not set")
-        
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {JINA_API_KEY}"
-    }
-    data = {
-        "model": "jina-embeddings-v3",
-        "input": [text] 
-    }
-    
+    headers = { "Content-Type": "application/json", "Authorization": f"Bearer {JINA_API_KEY}" }
+    data = { "model": "jina-embeddings-v3", "input": [text] }
     try:
         resp = requests.post(JINA_API_URL, headers=headers, json=data, timeout=10)
         resp.raise_for_status()
-        result = resp.json()
-        return result["data"][0]["embedding"]
+        return resp.json()["data"][0]["embedding"]
     except Exception as e:
         print(f"[Jina API Error] {e}")
         return None
 
 def search_units_semantic(query: str, top_k: int = 5):
     global CORPUS_VECTORS
-    
-    if not JINA_API_KEY or CORPUS_VECTORS is None:
-        return []
-
+    if not JINA_API_KEY or CORPUS_VECTORS is None: return []
     try:
         query_vec_list = get_jina_embedding(query)
-        if not query_vec_list:
-            return []
-            
+        if not query_vec_list: return []
         query_vec = np.array(query_vec_list, dtype="float32")
-
         scores = np.dot(CORPUS_VECTORS, query_vec)
-
         top_indices = np.argsort(scores)[-top_k:][::-1]
-        
         results = []
         for idx in top_indices:
             score = float(scores[idx])
@@ -219,7 +182,6 @@ def search_units_semantic(query: str, top_k: int = 5):
                 r["_best_segment"] = None
                 results.append(r)
         return results
-
     except Exception as e:
         print(f"[search] 向量搜尋發生錯誤: {e}")
         return []
@@ -387,9 +349,7 @@ def haversine_km(lon1, lat1, lon2, lat2) -> float:
     return 6371 * c 
 
 def geocode_address(address: str):
-    if not address:
-        return None
-
+    if not address: return None
     def try_geocode(addr: str):
         url = "https://nominatim.openstreetmap.org/search"
         params = {"q": addr, "format": "json", "limit": 1}
@@ -399,62 +359,15 @@ def geocode_address(address: str):
             r.raise_for_status()
             data = r.json()
             if data:
-                lat = float(data[0]["lat"])
-                lon = float(data[0]["lon"])
-                print(f"[geocode] 命中：'{addr}' -> lat={lat}, lon={lon}")
-                return lat, lon
-        except Exception as e:
-            print(f"[geocode] 錯誤：{e}")
+                return float(data[0]["lat"]), float(data[0]["lon"])
+        except Exception: pass
         return None
 
-    print(f"[geocode] 嘗試：{address}")
-    result = try_geocode(address)
-    if result:
-        return result
-
+    res = try_geocode(address)
+    if res: return res
     if "臺" in address:
-        addr2 = address.replace("臺", "台")
-        print(f"[geocode] 嘗試：{addr2}")
-        result = try_geocode(addr2)
-        if result:
-            return result
-
-    addr3 = re.sub(r"\d+號.*", "", address)
-    if addr3 != address:
-        print(f"[geocode] 嘗試（去號）：{addr3}")
-        result = try_geocode(addr3)
-        if result:
-            return result
-
-    addr4 = re.sub(r"\d+弄.*", "", address)
-    if addr4 != address:
-        print(f"[geocode] 嘗試（去弄）：{addr4}")
-        result = try_geocode(addr4)
-        if result:
-            return result
-
-    addr5 = re.sub(r"\d+巷.*", "", address)
-    if addr5 != address:
-        print(f"[geocode] 嘗試（去巷）：{addr5}")
-        result = try_geocode(addr5)
-        if result:
-            return result
-
-    m = re.match(
-        r"(台北市|臺北市|新北市|桃園市|臺中市|台中市|臺南市|台南市|高雄市|"
-        r"基隆市|新竹市|嘉義市|新竹縣|苗栗縣|彰化縣|南投縣|雲林縣|嘉義縣|"
-        r"屏東縣|宜蘭縣|花蓮縣|臺東縣|台東縣|澎湖縣|金門縣|連江縣)"
-        r"(.+?(區|市|鎮|鄉))",
-        address
-    )
-    if m:
-        addr6 = m.group(1) + m.group(2)
-        print(f"[geocode] 嘗試（市+區/鄉/鎮/市）：{addr6}")
-        result = try_geocode(addr6)
-        if result:
-            return result
-
-    print(f"[geocode] 完全查不到：{address}")
+        res = try_geocode(address.replace("臺", "台"))
+        if res: return res
     return None
 
 def find_nearby_points(lat, lon, max_km=5, top_k=5):
@@ -482,54 +395,49 @@ def load_all_units() -> List[Dict[str, Any]]:
     print(f"[load] ✅ 共載入 {len(units)} 個單元")
     return units
 
+# --- 關鍵修正區塊：UI 與翻譯邏輯整合 ---
 def build_recommendations_response(query: str, results: List[Dict[str, Any]], 
                                    offset: int = 0, limit: int = TOP_K, 
                                    target_lang: str = "zh-TW"):
     
-    # --- 1. 定義介面文字 (使用 Hardcode 保證翻譯品質) ---
-    if target_lang == 'en':
-        ui = {
-            "not_found": "Currently no relevant courses found. You can try keywords like: stress, insomnia, depression...",
-            "found_pattern": "Found {total} results (🎥 Video {v_count}, 📄 Article {a_count})",
-            "showing": "Showing items",
-            "intro": "Based on your description, I found these courses/articles:",
-            "hint_prefix": "Tips: ",
-            "hint_default": "No specific keywords found in subtitles, you can watch from the beginning.",
-            "video_link": "🎥 Link: ",
-            "more_btn": "👉 Click 'Next 5' for more"
-        }
-    elif target_lang == 'ja':
-        # [新增] 日文介面 hardcode
+    # 1. 根據語言選擇 Hardcode 的 UI 文字 (保證翻譯成功)
+    # [修正點] 確保變數名稱統一
+    if target_lang == 'ja':
         ui = {
             "not_found": "条件に合うコンテンツが見つかりませんでした。「ストレス」、「不眠」、「不安」などのキーワードで試してみてください。",
-            "found_pattern": "合計 {total} 件見つかりました（🎥 動画 {v_count}、📄 記事 {a_count}）",
-            "showing": "表示中: ",
-            "intro": "ご相談内容に基づき、以下のコース/記事を検索しました：",
+            "found_msg": "📚 合計 {total} 件見つかりました（🎥 動画 {v_count}、📄 記事 {a_count}）\n表示中: {start}～{end} 件\n\nご相談内容に基づき、以下のコース/記事を検索しました：",
             "hint_prefix": "ヒント: ",
             "hint_default": "字幕に特定のキーワードは見つかりませんでした。最初からご覧ください。",
             "video_link": "🎥 リンク: ",
             "more_btn": "👉 「次の5件」をクリックしてもっと見る"
         }
+    elif target_lang == 'en':
+        ui = {
+            "not_found": "Currently no relevant courses found. Try keywords like: stress, insomnia...",
+            "found_msg": "📚 Found {total} results (🎥 Video {v_count}, 📄 Article {a_count})\nShowing items {start}-{end}\n\nBased on your description, I found these courses/articles:",
+            "hint_prefix": "Tips: ",
+            "hint_default": "No specific keywords found in subtitles, you can watch from the beginning.",
+            "video_link": "🎥 Link: ",
+            "more_btn": "👉 Click 'Next 5' for more"
+        }
     else:
         # 預設中文
         ui = {
             "not_found": "目前找不到很符合的課程，可以試著用：婆媳、壓力、憂鬱、失眠… 等詞再試試看。",
-            "found_pattern": "共找到 {total} 筆內容（🎥 影片 {v_count}、📄 文章 {a_count}）",
-            "showing": "目前顯示第",
-            "intro": "根據你的敘述，我幫你找了這些課程 / 文章：",
+            "found_msg": "📚 共找到 {total} 筆內容（🎥 影片 {v_count}、📄 文章 {a_count}）\n目前顯示第 {start}～{end} 筆\n\n根據你的敘述，我幫你找了這些課程 / 文章：",
             "hint_prefix": "💡 小提醒：",
             "hint_default": "字幕裡沒有特別命中關鍵句，可以從頭開始看。",
             "video_link": "🎥 影片連結：",
             "more_btn": "👉 點擊 「給我後五個」 可以看更多"
         }
-        
-        # 如果是其他語言 (韓文/歐語等)，才使用即時翻譯
-        if target_lang != "zh-TW":
-            for k, v in ui.items():
-                if "{total}" not in v: # 簡單字串直接翻
-                    ui[k] = translate_text(v, target_lang)
+    
+    # 其他語言動態翻譯 (非 JA/EN/ZH)
+    if target_lang not in ['ja', 'en', 'zh-TW']:
+        for k, v in ui.items():
+            if "{total}" not in v:
+                ui[k] = translate_text(v, target_lang)
 
-    # --- 2. 處理無結果 ---
+    # 2. 處理無結果
     if not results:
         return {
             "type": "course_recommendation", "query": query, "total": 0, "video_count": 0, "article_count": 0,
@@ -537,48 +445,54 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
             "message": ui["not_found"]
         }
 
-    # --- 3. 數據計算與 Header ---
+    # 3. 數據計算與 Header 組裝
     results = reorder_episode_pairs(results)
     total = len(results)
     video_count = sum(1 for r in results if not r.get("is_article"))
     article_count = sum(1 for r in results if r.get("is_article"))
     page_results = results[offset: offset + limit]
     
-    # 根據語言組裝 Header
-    if target_lang == 'en':
-        header_msg = (
-            f"📚 {ui['found_pattern'].format(total=total, v_count=video_count, a_count=article_count)}\n"
-            f"{ui['showing']} {offset + 1}-{min(offset + limit, total)}\n\n"
-            f"{ui['intro']}"
-        )
-    elif target_lang == 'ja':
-        header_msg = (
-            f"📚 {ui['found_pattern'].format(total=total, v_count=video_count, a_count=article_count)}\n"
-            f"{ui['showing']} {offset + 1}～{min(offset + limit, total)} 件\n\n"
-            f"{ui['intro']}"
-        )
-    else:
-        # 中文
-        header_msg = (
-            f"📚 {ui['found_pattern'].format(total=total, v_count=video_count, a_count=article_count)}\n"
-            f"{ui['showing']} {offset + 1}～{min(offset + limit, total)} 筆\n\n"
-            f"{ui['intro']}"
-        )
+    start_idx = offset + 1
+    end_idx = min(offset + limit, total)
+    
+    # [修正點] 直接使用選定語言的 found_msg，確保 UI 語言正確
+    header_msg = ui["found_msg"].format(
+        total=total, v_count=video_count, a_count=article_count,
+        start=start_idx, end=end_idx
+    )
 
     items = []
     
-    # --- 4. 逐筆處理 ---
+    # 4. 逐筆處理
     for r in page_results:
-        raw_title = r.get("title") or "(Untitled)"
+        raw_title = r.get("title") or "(無標題)"
         raw_section = r.get("section_title") or ""
         
-        # 標題處理
+        # [核心修正] 標題翻譯與格式
         if target_lang != "zh-TW":
-            trans_title = translate_text(raw_title, target_lang)
+            # 預處理：替換關鍵字與「插入空白」以引導翻譯
+            pre_trans_title = raw_title
             
-            # 檢查翻譯是否有效 (不為空 且 不等於原文)
-            if trans_title and trans_title != raw_title:
-                display_title = f"{raw_title}\n   [{trans_title}]"
+            if target_lang == 'ja':
+                # 替換成日文標籤 + 增加漢字間的空白讓翻譯更準確
+                pre_trans_title = pre_trans_title.replace("【影片】", "【動画】").replace("【文章】", "【記事】")
+                pre_trans_title = pre_trans_title.replace("(上)", "(前編)").replace("(下)", "(後編)")
+                pre_trans_title = pre_trans_title.replace("（上）", "(前編)").replace("（下）", "(後編)")
+                
+                # [強力手段] 對付不翻譯的標題：把中文助詞換掉
+                pre_trans_title = pre_trans_title.replace("醫師", "医師")
+                pre_trans_title = pre_trans_title.replace("教授", "先生")
+                pre_trans_title = pre_trans_title.replace("與", "と").replace("的", "の")
+                
+                # 如果標題太像專有名詞，Google 有時不翻，這裡嘗試把"【】"拿掉再送
+                if "【" in pre_trans_title:
+                     pre_trans_title = re.sub(r"[【】]", " ", pre_trans_title)
+
+            trans_title = translate_text(pre_trans_title, target_lang)
+            
+            # [修正點] 移除中括號，改成換行顯示
+            if trans_title and trans_title.replace(" ","") != raw_title.replace(" ",""):
+                display_title = f"{raw_title}\n{trans_title}"
             else:
                 display_title = raw_title
             
@@ -617,26 +531,20 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
             else:
                 entry["snippet"] = snippet_raw     
         else:
-            # 處理影片提示語
             seg = r.get("_best_segment")
             if seg:
                 start_str = format_time(seg.get("start_sec", 0.0))
                 seg_text = seg.get('text', '')[:30]
                 
-                # 若是英日文，使用翻譯並 Hardcode 結構
-                if target_lang == "en":
+                if target_lang != "zh-TW":
                     trans_seg = translate_text(seg_text, target_lang)
-                    hint_body = f"Mentioned at {start_str}: \"{trans_seg}...\""
-                elif target_lang == "ja":
-                    trans_seg = translate_text(seg_text, target_lang)
-                    hint_body = f"{start_str} にて言及: 「{trans_seg}...」"
-                elif target_lang != "zh-TW":
-                    trans_seg = translate_text(seg_text, target_lang)
-                    hint_body = f"{start_str}: \"{trans_seg}...\""
+                    if target_lang == "ja":
+                        hint_body = f"{start_str} にて言及: 「{trans_seg}...」"
+                    else:
+                        hint_body = f"Mentioned at {start_str}: \"{trans_seg}...\""
                 else:
                     hint_body = f"該單元在 {start_str} 有提到：「{seg_text}...」"
             else:
-                # 這裡會用到上方定義好的 ui["hint_default"] (已經是日文了)
                 hint_body = ui["hint_default"]
             
             entry["hint"] = f"{ui['hint_prefix']} {hint_body}"
@@ -657,38 +565,6 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
         "results": items,
         "header_text": header_msg, 
         "message": ui["more_btn"] if (offset + limit < total) else "" 
-    }
-
-def build_nearby_points_response(address: str, results):
-    if not results:
-        return {
-            "type": "xin_points",
-            "address": address,
-            "points": [],
-            "message": f"在「{address}」5 公里內沒有找到心據點"
-        }
-
-    points = []
-    origin_encoded = urllib.parse.quote(address)
-
-    for p, d in results:
-        dest_address = p.get("address", "")
-        dest_encoded = urllib.parse.quote(dest_address)
-        
-        map_url = f"https://www.google.com/maps/dir/?api=1&origin={origin_encoded}&destination={dest_encoded}&hl=zh-TW"
-
-        points.append({
-            "title": p.get("title"),
-            "address": dest_address,
-            "tel": p.get("tel"),
-            "distance_km": round(d, 2),
-            "map_url": map_url
-        })
-
-    return {
-        "type": "xin_points",
-        "address": address,
-        "points": points
     }
 
 def execute_hybrid_search(search_query: str) -> List[Dict[str, Any]]:
