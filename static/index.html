@@ -313,12 +313,10 @@
 
       if (resp.type === 'advice') {
         const lines = [];
-
         if (resp.title) {
           lines.push(`【${resp.title}】`);
           lines.push('');
         }
-
         (resp.sections || []).forEach((sec) => {
           if (sec.title && sec.title.trim() !== '') {
             lines.push(sec.title);
@@ -328,7 +326,6 @@
           });
           lines.push('');
         });
-
         return lines.join('\n');
       }
 
@@ -358,7 +355,6 @@
             }
           });
         }
-
         return lines.join('\n');
       }
 
@@ -366,26 +362,40 @@
         const lines = [];
         const results = resp.results || [];
 
-        if (resp.video_count == 0)
-          lines.push(`📚 共找到 ${resp.total} 筆內容（📄 文章 ${resp.article_count}）`);
-        else if (resp.article_count == 0)
-          lines.push(`📚 共找到 ${resp.total} 筆內容（🎥 影片 ${resp.video_count}）`);
-        else
-          lines.push(`📚 共找到 ${resp.total} 筆內容（🎥 影片 ${resp.video_count}、📄 文章 ${resp.article_count}）`);
-        lines.push(`目前顯示第 ${resp.offset + 1}～${Math.min(resp.offset + resp.limit, resp.total)} 筆`);
-        lines.push('');
+        // 1. 顯示 Header (優先使用後端回傳的 header_text，因為那是已經翻譯好的)
+        if (resp.header_text) {
+             lines.push(resp.header_text);
+        } else {
+             // Fallback (舊邏輯，以防萬一)
+             if (resp.video_count == 0)
+               lines.push(`📚 共找到 ${resp.total} 筆內容（📄 文章 ${resp.article_count}）`);
+             else if (resp.article_count == 0)
+               lines.push(`📚 共找到 ${resp.total} 筆內容（🎥 影片 ${resp.video_count}）`);
+             else
+               lines.push(`📚 共找到 ${resp.total} 筆內容（🎥 影片 ${resp.video_count}、📄 文章 ${resp.article_count}）`);
+             lines.push(`目前顯示第 ${resp.offset + 1}～${Math.min(resp.offset + resp.limit, resp.total)} 筆`);
+             lines.push('');
+             lines.push('根據你的敘述，我幫你找了這些課程 / 文章：');
+        }
 
         if (results.length === 0) {
           lines.push(resp.message || '目前找不到很符合的課程，可以換個關鍵字再試試。');
           return lines.join('\n').replace(/\n/g, '<br>');
         }
 
-        lines.push('根據你的敘述，我幫你找了這些課程 / 文章：');
-
         results.forEach((item, idx) => {
-          const sec = '';
+          const sec = item.section_title || '';
           const title = item.title || '(無標題)';
           const kind = item.type === 'article' ? '文章' : '影片';
+          
+          // 針對日文做簡單的圖示替換 (如果 title 包含換行符號，代表有翻譯)
+          let kindDisplay = kind;
+          if (title.includes('\n')) {
+               if (kind === '文章') kindDisplay = '📝'; // 通用圖示
+               if (kind === '影片') kindDisplay = '🎬';
+          } else {
+               kindDisplay = `【${kind}】`;
+          }
           
           let scoreHtml = '';
           if (item.score !== undefined) {
@@ -393,25 +403,49 @@
           }
 
           lines.push('');
-          lines.push(`${idx + 1}. 【${kind}】${sec ? '【' + sec + '】' : ''}${title}${scoreHtml}`);
+          // 標題顯示優化
+          lines.push(`${idx + 1}. ${kindDisplay}${sec ? ' ' + sec : ''} ${title}${scoreHtml}`);
 
           if (item.type === 'video') {
             if (item.youtube_url) {
-              lines.push(`   🎥 影片連結：<a href="${item.youtube_url}" target="_blank" rel="noopener noreferrer">${item.youtube_url}</a>`);
+              // 優先使用後端翻譯過的 Link Label
+              const label = item.link_label || "🎥 影片連結：";
+              lines.push(`   ${label}<a href="${item.youtube_url}" target="_blank" rel="noopener noreferrer">${item.youtube_url}</a>`);
             }
-            if (item.hint) lines.push(`   💡 小提醒：${item.hint}`);
+            if (item.hint) lines.push(`   ${item.hint}`); // hint 已經包含 emoji
           } else if (item.type === 'article') {
             if (item.article_url) {
-              lines.push(`   📄 文章連結：<a href="${item.article_url}" target="_blank" rel="noopener noreferrer">${item.article_url}</a>`);
+              const label = item.link_label || "📄 文章連結：";
+              lines.push(`   ${label}<a href="${item.article_url}" target="_blank" rel="noopener noreferrer">${item.article_url}</a>`);
             }
-            if (item.snippet) lines.push(`   🧾 節錄：${item.snippet}`);
+            if (item.snippet) lines.push(`   🧾 ${item.snippet}`);
           }
         });
 
-        if (resp.has_more) {
+        // 2. 顯示 Footer (使用後端回傳的 message，並把它變成可點擊的連結)
+        if (resp.has_more && resp.message) {
           lines.push('');
-          // 我們加入 class="auto-send-link" 和 data-msg 來儲存要發送的文字
-          lines.push('👉 點擊 <a href="#" class="auto-send-link" data-msg="給我後五個">「給我後五個」</a> 可以看更多');
+          
+          // 這裡做一個簡單的解析：把後端回傳的 "👉 點擊 「給我後五個」..." 變成可點擊
+          // 我們假設後端回傳的 message 格式固定，提取引號內的文字作為指令
+          let btnText = "給我後五個"; // 預設值
+          
+          // 嘗試從 message 中提取指令 (例如: 「給我後五個」 or 'Next 5')
+          // 支援中文引號、英文單引號
+          const match = resp.message.match(/「(.+?)」|'(.+?)'/);
+          if (match) {
+              btnText = match[1] || match[2];
+          } else if (resp.message.includes("Next 5")) {
+              btnText = "Next 5"; // 英文特例
+          } else if (resp.message.includes("次の5件")) {
+              btnText = "次の5件"; // 日文特例
+          }
+
+          // 將整句 message 轉為連結 (或者只轉按鈕部分，這裡為了簡單，整句提示都放上去，但點擊送出核心指令)
+          // 為了美觀，我們把後端回傳的純文字 message 替換成帶有 <a> 標籤的 HTML
+          
+          // 簡單做法：直接顯示一個按鈕連結
+          lines.push(`<a href="#" class="auto-send-link" data-msg="${btnText}" style="text-decoration:none; color:#4f46e5; font-weight:bold; border:1px solid #4f46e5; padding:4px 12px; border-radius:15px; display:inline-block; margin-top:8px;">${resp.message}</a>`);
         }
 
         return lines.join('\n').replace(/\n/g, '<br>');
