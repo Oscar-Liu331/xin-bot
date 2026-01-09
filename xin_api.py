@@ -44,9 +44,14 @@ STOP_WORDS = []
 TRANSLATION_CACHE = {}
 
 def detect_language(text: str) -> str:
-    try:
-        if not re.search(r'[a-zA-Z\u4e00-\u9fa5]', text):
+    if not text: return "zh-TW"
+    
+    chinese_char_count = len(re.findall(r'[\u4e00-\u9fa5]', text))
+    if chinese_char_count > 0:
+        if len(text) < 10 or (chinese_char_count / len(text)) > 0.5:
             return "zh-TW"
+
+    try:
         lang = detect(text)
         if lang.startswith("zh"):
             return "zh-TW"
@@ -424,16 +429,29 @@ def load_all_units() -> List[Dict[str, Any]]:
 def build_recommendations_response(query: str, results: List[Dict[str, Any]], 
                                    offset: int = 0, limit: int = TOP_K, 
                                    target_lang: str = "zh-TW"):
-    
+    ui_texts = {
+        "not_found": "目前找不到很符合的課程，可以試著用：婆媳、壓力、憂鬱、失眠… 等詞再試試看。",
+        "found_prefix": "共找到",
+        "found_suffix_video": "筆內容（🎥 影片",
+        "found_suffix_article": "、📄 文章",
+        "found_end": "）",
+        "showing": "目前顯示第",
+        "intro": "根據你的敘述，我幫你找了這些課程 / 文章：",
+        "hint_prefix": "💡 小提醒：",
+        "hint_default": "字幕裡沒有特別命中關鍵句，可以從頭開始看。",
+        "video_link": "🎥 影片連結：",
+        "more_btn": "👉 點擊 「給我後五個」 可以看更多"
+    }
+
+    if target_lang != "zh-TW":
+        for key, text in ui_texts.items():
+            ui_texts[key] = translate_text(text, target_lang)
+
     if not results:
-        msg = "目前找不到很符合的課程，可以試著用：婆媳、壓力、憂鬱、失眠… 等詞再試試看。"
-        if target_lang != "zh-TW":
-            msg = translate_text(msg, target_lang)
-            
         return {
             "type": "course_recommendation", "query": query, "total": 0, "video_count": 0, "article_count": 0,
             "offset": offset, "limit": limit, "has_more": False, "results": [],
-            "message": msg
+            "message": ui_texts["not_found"]
         }
 
     results = reorder_episode_pairs(results)
@@ -442,26 +460,39 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
     article_count = sum(1 for r in results if r.get("is_article"))
     page_results = results[offset: offset + limit]
     
+    header_msg = (
+        f"{ui_texts['found_prefix']} {total} {ui_texts['found_suffix_video']} "
+        f"{video_count}{ui_texts['found_suffix_article']} {article_count}{ui_texts['found_end']}\n"
+        f"{ui_texts['showing']} {offset + 1}～{min(offset + limit, total)} 筆\n\n"
+        f"{ui_texts['intro']}"
+    )
+
     items = []
     
     for r in page_results:
         raw_title = r.get("title") or "(無標題)"
-        raw_section = r.get("section_title") or "(未分類小節)"
+        raw_section = r.get("section_title") or ""
         
         if target_lang != "zh-TW":
-            title = translate_text(raw_title, target_lang)
-            section_title = translate_text(raw_section, target_lang)
+            trans_title = translate_text(raw_title, target_lang)
+            display_title = f"{raw_title} [{trans_title}]"
+            
+            if raw_section:
+                trans_section = translate_text(raw_section, target_lang)
+                display_section = f"{raw_section} [{trans_section}]"
+            else:
+                display_section = ""
         else:
-            title = raw_title
-            section_title = raw_section
+            display_title = raw_title
+            display_section = raw_section
 
         score = r.get("_score", 0.0)
         is_article = bool(r.get("is_article"))
         youtube_url = r.get("youtube_url")
 
         entry = {
-            "section_title": section_title, 
-            "title": title, 
+            "section_title": display_section, 
+            "title": display_title, 
             "score": score,
             "is_article": is_article, 
             "type": "article" if is_article else "video",
@@ -470,42 +501,45 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
         if is_article:
             content_text = (r.get("content_text") or "").replace("\n", " ")
             snippet_raw = content_text[:100] + "..."
-            
             entry["article_url"] = r.get("article_url") or r.get("url")
             
             if target_lang != "zh-TW":
                 entry["snippet"] = translate_text(snippet_raw, target_lang)
             else:
-                entry["snippet"] = snippet_raw
-                
+                entry["snippet"] = snippet_raw     
         else:
             seg = r.get("_best_segment")
             if seg:
                 start_str = format_time(seg.get("start_sec", 0.0))
                 seg_text = seg.get('text', '')[:30]
                 
-                hint_raw = f"該單元在 {start_str} 有提到：「{seg_text}...」"
-                
                 if target_lang != "zh-TW":
-                    entry["hint"] = translate_text(hint_raw, target_lang)
+                    trans_seg = translate_text(seg_text, target_lang)
+                    hint_body = f"Relevant content at {start_str}: \"{trans_seg}...\""
                 else:
-                    entry["hint"] = hint_raw
+                    hint_body = f"該單元在 {start_str} 有提到：「{seg_text}...」"
             else:
-                hint_raw = "字幕裡沒有特別命中關鍵句，可以從頭開始看。"
-                if target_lang != "zh-TW":
-                    entry["hint"] = translate_text(hint_raw, target_lang)
-                else:
-                    entry["hint"] = hint_raw
+                hint_body = ui_texts["hint_default"]
             
+            entry["hint"] = f"{ui_texts['hint_prefix']}{hint_body}"
             entry["youtube_url"] = youtube_url
+            
+            entry["link_label"] = ui_texts["video_link"] 
 
         items.append(entry)
-
+    
     return {
-        "type": "course_recommendation", "query": query, "total": total,
-        "video_count": video_count, "article_count": article_count,
-        "offset": offset, "limit": limit, "has_more": offset + limit < total,
-        "results": items
+        "type": "course_recommendation", 
+        "query": query, 
+        "total": total,
+        "video_count": video_count, 
+        "article_count": article_count,
+        "offset": offset, 
+        "limit": limit, 
+        "has_more": offset + limit < total,
+        "results": items,
+        "header_text": header_msg, 
+        "message": ui_texts["more_btn"] if (offset + limit < total) else ""
     }
 
 def build_nearby_points_response(address: str, results):
