@@ -49,10 +49,7 @@ TRANSLATION_CACHE = {}
 def detect_language(text: str) -> str:
     """
     語言偵測最終版：
-    1. 優先檢查日文假名 -> ja
-    2. 優先檢查韓文諺文 -> ko
-    3. 檢查漢字 -> zh-TW
-    4. 純英數 -> en
+    優先檢查日文假名與韓文，避免誤判為中文。
     """
     if not text: return "zh-TW"
     
@@ -86,7 +83,6 @@ def translate_text(text: str, target: str) -> str:
     翻譯函式
     """
     if not text: return ""
-    # 如果目標是中文，且原文就是中文，直接回傳
     if target == "zh-TW" and detect_language(text) == "zh-TW":
         return text
     
@@ -98,9 +94,8 @@ def translate_text(text: str, target: str) -> str:
         translator = GoogleTranslator(source='auto', target=target)
         result = translator.translate(text)
         
-        # 簡單防呆：如果翻譯失敗回傳原文，且原文有長度，嘗試移除符號重試
+        # 簡單防呆：如果翻譯失敗回傳原文，嘗試移除符號重試
         if result == text and len(text) > 5 and target != "zh-TW":
-             # 移除常見干擾符號
              clean = re.sub(r"[【】《》「」]", " ", text).strip()
              if clean != text:
                  retry = translator.translate(clean)
@@ -395,13 +390,13 @@ def load_all_units() -> List[Dict[str, Any]]:
     print(f"[load] ✅ 共載入 {len(units)} 個單元")
     return units
 
-# --- 關鍵修正區塊：UI 與翻譯邏輯整合 ---
+# --- 關鍵修正區塊 ---
 def build_recommendations_response(query: str, results: List[Dict[str, Any]], 
                                    offset: int = 0, limit: int = TOP_K, 
                                    target_lang: str = "zh-TW"):
     
-    # 1. 根據語言選擇 Hardcode 的 UI 文字 (保證翻譯成功)
-    # [修正點] 確保變數名稱統一
+    # [核心修正] 強制定義介面文字，避免跑到 else (中文)
+    # 使用 if/elif 嚴格區分語言
     if target_lang == 'ja':
         ui = {
             "not_found": "条件に合うコンテンツが見つかりませんでした。「ストレス」、「不眠」、「不安」などのキーワードで試してみてください。",
@@ -430,8 +425,8 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
             "video_link": "🎥 影片連結：",
             "more_btn": "👉 點擊 「給我後五個」 可以看更多"
         }
-    
-    # 其他語言動態翻譯 (非 JA/EN/ZH)
+
+    # 處理其他語言 (非 JA/EN/ZH) 的動態翻譯
     if target_lang not in ['ja', 'en', 'zh-TW']:
         for k, v in ui.items():
             if "{total}" not in v:
@@ -455,7 +450,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
     start_idx = offset + 1
     end_idx = min(offset + limit, total)
     
-    # [修正點] 直接使用選定語言的 found_msg，確保 UI 語言正確
+    # 直接使用選定語言的 found_msg，確保 UI 語言正確
     header_msg = ui["found_msg"].format(
         total=total, v_count=video_count, a_count=article_count,
         start=start_idx, end=end_idx
@@ -470,28 +465,44 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
         
         # [核心修正] 標題翻譯與格式
         if target_lang != "zh-TW":
-            # 預處理：替換關鍵字與「插入空白」以引導翻譯
             pre_trans_title = raw_title
             
+            # [強制替換] 針對日文的預處理字典，解決「假日文」問題
             if target_lang == 'ja':
-                # 替換成日文標籤 + 增加漢字間的空白讓翻譯更準確
-                pre_trans_title = pre_trans_title.replace("【影片】", "【動画】").replace("【文章】", "【記事】")
-                pre_trans_title = pre_trans_title.replace("(上)", "(前編)").replace("(下)", "(後編)")
-                pre_trans_title = pre_trans_title.replace("（上）", "(前編)").replace("（下）", "(後編)")
+                # 建立替換表：把容易被誤認為日文漢字的中文詞，強制換成標準日文
+                replacements = {
+                    "銀髮族": "高齢者",
+                    "好眠": "快眠",
+                    "睡眠障礙": "睡眠障害",
+                    "困擾": "悩み",
+                    "處方": "処方",
+                    "筆記": "ノート",
+                    "如何": "いかにして",
+                    "職人": "プロ",
+                    "臨床心理師": "臨床心理士",
+                    "醫師": "医師",
+                    "教授": "先生",
+                    "影片": "動画",
+                    "文章": "記事",
+                    "（上）": "（前編）",
+                    "（下）": "（後編）",
+                    "與": "と",
+                    "的": "の"
+                }
                 
-                # [強力手段] 對付不翻譯的標題：把中文助詞換掉
-                pre_trans_title = pre_trans_title.replace("醫師", "医師")
-                pre_trans_title = pre_trans_title.replace("教授", "先生")
-                pre_trans_title = pre_trans_title.replace("與", "と").replace("的", "の")
+                # 先進行一輪強制替換
+                for zh_term, ja_term in replacements.items():
+                    pre_trans_title = pre_trans_title.replace(zh_term, ja_term)
                 
-                # 如果標題太像專有名詞，Google 有時不翻，這裡嘗試把"【】"拿掉再送
-                if "【" in pre_trans_title:
-                     pre_trans_title = re.sub(r"[【】]", " ", pre_trans_title)
+                # 處理括號格式 (統一轉為半形以利閱讀)
+                pre_trans_title = pre_trans_title.replace("【", "[").replace("】", "] ")
 
+            # 送出翻譯
             trans_title = translate_text(pre_trans_title, target_lang)
             
-            # [修正點] 移除中括號，改成換行顯示
-            if trans_title and trans_title.replace(" ","") != raw_title.replace(" ",""):
+            # [修正點] 改成換行顯示 (上行原文，下行翻譯)
+            # 如果翻譯後跟原文差異不大(例如本來就是數字或英文)，就不顯示翻譯
+            if trans_title and len(trans_title) > 2 and trans_title != raw_title:
                 display_title = f"{raw_title}\n{trans_title}"
             else:
                 display_title = raw_title
