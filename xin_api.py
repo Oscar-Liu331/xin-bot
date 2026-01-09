@@ -48,20 +48,19 @@ TRANSLATION_CACHE = {}
 
 def detect_language(text: str) -> str:
     """
-    語言偵測最終版：
-    優先檢查日文假名與韓文，避免誤判為中文。
+    語言偵測最終版
     """
     if not text: return "zh-TW"
     
-    # 1. [優先] 檢查日文 (平假名 \u3040-\u309f / 片假名 \u30a0-\u30ff)
+    # 1. [優先] 檢查日文
     if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
         return "ja"
 
-    # 2. [優先] 檢查韓文 (諺文 \uac00-\ud7af)
+    # 2. [優先] 檢查韓文
     if re.search(r'[\uac00-\ud7af]', text):
         return "ko"
 
-    # 3. 檢查中文 (漢字 \u4e00-\u9fa5)
+    # 3. 檢查中文
     if re.search(r'[\u4e00-\u9fa5]', text):
         return "zh-TW"
 
@@ -94,7 +93,7 @@ def translate_text(text: str, target: str) -> str:
         translator = GoogleTranslator(source='auto', target=target)
         result = translator.translate(text)
         
-        # 簡單防呆：如果翻譯失敗回傳原文，嘗試移除符號重試
+        # 簡單防呆
         if result == text and len(text) > 5 and target != "zh-TW":
              clean = re.sub(r"[【】《》「」]", " ", text).strip()
              if clean != text:
@@ -181,8 +180,15 @@ def search_units_semantic(query: str, top_k: int = 5):
         print(f"[search] 向量搜尋發生錯誤: {e}")
         return []
 
+# [修正 1] 擴充多國語言的分頁關鍵字
 def detect_pagination_intent(q: str) -> bool:
-    return any(w in q for w in ["給我後五個","給我下五個","後五個","下五個","下一頁","更多推薦"])
+    q = q.lower().strip()
+    keywords = [
+        "給我後五個", "給我下五個", "後五個", "下五個", "下一頁", "更多推薦", # 中文
+        "next 5", "show me more", "more results", # 英文
+        "次の5件", "もっと見る", "続き", "最後の5つ", "最後の5つをください" # 日文
+    ]
+    return any(kw in q for kw in keywords)
 
 def extract_address_from_query(q: str) -> str:
     original = q
@@ -390,13 +396,11 @@ def load_all_units() -> List[Dict[str, Any]]:
     print(f"[load] ✅ 共載入 {len(units)} 個單元")
     return units
 
-# --- 關鍵修正區塊 ---
 def build_recommendations_response(query: str, results: List[Dict[str, Any]], 
                                    offset: int = 0, limit: int = TOP_K, 
                                    target_lang: str = "zh-TW"):
     
-    # [核心修正] 強制定義介面文字，避免跑到 else (中文)
-    # 使用 if/elif 嚴格區分語言
+    # 1. 介面文字 (UI)
     if target_lang == 'ja':
         ui = {
             "not_found": "条件に合うコンテンツが見つかりませんでした。「ストレス」、「不眠」、「不安」などのキーワードで試してみてください。",
@@ -426,7 +430,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
             "more_btn": "👉 點擊 「給我後五個」 可以看更多"
         }
 
-    # 處理其他語言 (非 JA/EN/ZH) 的動態翻譯
+    # 其他語言動態翻譯 (非 JA/EN/ZH)
     if target_lang not in ['ja', 'en', 'zh-TW']:
         for k, v in ui.items():
             if "{total}" not in v:
@@ -450,7 +454,6 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
     start_idx = offset + 1
     end_idx = min(offset + limit, total)
     
-    # 直接使用選定語言的 found_msg，確保 UI 語言正確
     header_msg = ui["found_msg"].format(
         total=total, v_count=video_count, a_count=article_count,
         start=start_idx, end=end_idx
@@ -463,45 +466,27 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
         raw_title = r.get("title") or "(無標題)"
         raw_section = r.get("section_title") or ""
         
-        # [核心修正] 標題翻譯與格式
+        # 標題翻譯與格式
         if target_lang != "zh-TW":
             pre_trans_title = raw_title
             
-            # [強制替換] 針對日文的預處理字典，解決「假日文」問題
+            # [強制替換] 日文預處理
             if target_lang == 'ja':
-                # 建立替換表：把容易被誤認為日文漢字的中文詞，強制換成標準日文
                 replacements = {
-                    "銀髮族": "高齢者",
-                    "好眠": "快眠",
-                    "睡眠障礙": "睡眠障害",
-                    "困擾": "悩み",
-                    "處方": "処方",
-                    "筆記": "ノート",
-                    "如何": "いかにして",
-                    "職人": "プロ",
-                    "臨床心理師": "臨床心理士",
-                    "醫師": "医師",
-                    "教授": "先生",
-                    "影片": "動画",
-                    "文章": "記事",
-                    "（上）": "（前編）",
-                    "（下）": "（後編）",
-                    "與": "と",
-                    "的": "の"
+                    "銀髮族": "高齢者", "好眠": "快眠", "睡眠障礙": "睡眠障害",
+                    "困擾": "悩み", "處方": "処方", "筆記": "ノート",
+                    "如何": "いかにして", "職人": "プロ", "臨床心理師": "臨床心理士",
+                    "醫師": "医師", "教授": "先生", "影片": "動画", "文章": "記事",
+                    "（上）": "（前編）", "（下）": "（後編）", "與": "と", "的": "の"
                 }
-                
-                # 先進行一輪強制替換
                 for zh_term, ja_term in replacements.items():
                     pre_trans_title = pre_trans_title.replace(zh_term, ja_term)
                 
-                # 處理括號格式 (統一轉為半形以利閱讀)
                 pre_trans_title = pre_trans_title.replace("【", "[").replace("】", "] ")
 
-            # 送出翻譯
             trans_title = translate_text(pre_trans_title, target_lang)
             
-            # [修正點] 改成換行顯示 (上行原文，下行翻譯)
-            # 如果翻譯後跟原文差異不大(例如本來就是數字或英文)，就不顯示翻譯
+            # 改成換行顯示
             if trans_title and len(trans_title) > 2 and trans_title != raw_title:
                 display_title = f"{raw_title}\n{trans_title}"
             else:
@@ -637,9 +622,20 @@ def chat(req: ChatRequest):
     q_origin = req.query.strip()
     session_id = req.session_id or "anonymous"
     
-    user_lang = detect_language(q_origin)
+    # 1. 取得歷史紀錄
+    history_list = HISTORY.get(session_id, [])
     
-    print(f">>> [/chat] session_id: {session_id} | User Lang: {user_lang} | Origin: {q_origin}")
+    # 2. 判斷是否為分頁意圖
+    is_pagination = detect_pagination_intent(q_origin)
+    
+    # 3. 決定語言：如果是分頁且有歷史，繼承上一輪語言；否則重新偵測
+    if is_pagination and history_list:
+        last_turn = history_list[-1]
+        user_lang = last_turn.get("detected_lang", "zh-TW")
+        print(f">>> [/chat] Pagination detected. Using history lang: {user_lang}")
+    else:
+        user_lang = detect_language(q_origin)
+        print(f">>> [/chat] New search. Detected lang: {user_lang}")
 
     if user_lang != "zh-TW":
         q_search = translate_text(q_origin, "zh-TW")
@@ -694,58 +690,67 @@ def chat(req: ChatRequest):
             results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
             resp = build_nearby_points_response(q_search, results)
 
-    elif detect_pagination_intent(q_search):
-        history = HISTORY.get(session_id, [])
-        last = next((h for h in reversed(history) if h["response"].get("type") == "course_recommendation"), None)
-        
-        if not last: 
+    elif detect_pagination_intent(q_search): # 這邊會用翻譯後的 "給我後五個" 來判斷，應該沒問題
+        if not history_list:
             msg = "目前沒有上一筆推薦結果，可以先問一個問題 😊"
             if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
             resp = {"type": "text", "message": msg}
         else:
-            prev_resp = last["response"]
-            prev_query = prev_resp.get("query_raw") or prev_resp.get("query")
-            prev_filter = prev_resp.get("filter_type", None)
-            new_offset = prev_resp["offset"] + prev_resp["limit"]
+            # 找到最後一筆是推薦類型的回應
+            last_recommendation = next((h for h in reversed(history_list) if isinstance(h.get("response"), dict) and h["response"].get("type") == "course_recommendation"), None)
             
-            full_results = execute_hybrid_search(prev_query)
-            if prev_filter == "article": full_results = [r for r in full_results if r.get("is_article")]
-            elif prev_filter == "video": full_results = [r for r in full_results if not r.get("is_article")]
-            
-            resp = build_recommendations_response(
-                prev_query, full_results, offset=new_offset, limit=TOP_K, 
-                target_lang=user_lang
-            )
-            resp["filter_type"] = prev_filter
-            resp["query_raw"] = prev_query
+            if not last_recommendation:
+                 msg = "目前沒有上一筆推薦結果，可以先問一個問題 😊"
+                 if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
+                 resp = {"type": "text", "message": msg}
+            else:
+                prev_resp = last_recommendation["response"]
+                prev_query = prev_resp.get("query_raw") or prev_resp.get("query")
+                prev_filter = prev_resp.get("filter_type", None)
+                new_offset = prev_resp["offset"] + prev_resp["limit"]
+                
+                full_results = execute_hybrid_search(prev_query)
+                if prev_filter == "article": full_results = [r for r in full_results if r.get("is_article")]
+                elif prev_filter == "video": full_results = [r for r in full_results if not r.get("is_article")]
+                
+                # [關鍵修正] 使用繼承的 user_lang
+                resp = build_recommendations_response(
+                    prev_query, full_results, offset=new_offset, limit=TOP_K, 
+                    target_lang=user_lang
+                )
+                resp["filter_type"] = prev_filter
+                resp["query_raw"] = prev_query
 
     elif media_pref_check and not q_cleaned:
-        history = HISTORY.get(session_id, [])
-        last = next((h for h in reversed(history) if isinstance(h.get("response"), dict) and h["response"].get("type") == "course_recommendation"), None)
-        
-        if not last:
+        if not history_list:
             msg = "請先輸入一個主題，例如「焦慮」或「失眠」。"
             if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
             resp = {"type": "course_recommendation", "query": q_search, "total": 0, "video_count": 0, "article_count": 0, "offset": 0, "limit": TOP_K, "has_more": False, "results": [], "message": msg}
         else:
-            prev_resp = last["response"]
-            original_topic = prev_resp.get("query_raw") or prev_resp.get("query")
-            
-            full_results = execute_hybrid_search(original_topic)
-            if media_pref_check == "article": full_results = [r for r in full_results if r.get("is_article")]
-            elif media_pref_check == "video": full_results = [r for r in full_results if not r.get("is_article")]
-            
-            resp = build_recommendations_response(
-                original_topic, full_results, offset=0, limit=TOP_K, 
-                target_lang=user_lang
-            )
-            resp["filter_type"] = media_pref_check
-            resp["query_raw"] = original_topic
-            
-            if not resp["results"]: 
-                msg = f"關於「{original_topic}」目前沒有相關的內容。" 
-                if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
-                resp["message"] = msg
+            last = next((h for h in reversed(history_list) if isinstance(h.get("response"), dict) and h["response"].get("type") == "course_recommendation"), None)
+            if not last:
+                 msg = "請先輸入一個主題，例如「焦慮」或「失眠」。"
+                 if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
+                 resp = {"type": "course_recommendation", "query": q_search, "total": 0, "video_count": 0, "article_count": 0, "offset": 0, "limit": TOP_K, "has_more": False, "results": [], "message": msg}
+            else:
+                prev_resp = last["response"]
+                original_topic = prev_resp.get("query_raw") or prev_resp.get("query")
+                
+                full_results = execute_hybrid_search(original_topic)
+                if media_pref_check == "article": full_results = [r for r in full_results if r.get("is_article")]
+                elif media_pref_check == "video": full_results = [r for r in full_results if not r.get("is_article")]
+                
+                resp = build_recommendations_response(
+                    original_topic, full_results, offset=0, limit=TOP_K, 
+                    target_lang=user_lang
+                )
+                resp["filter_type"] = media_pref_check
+                resp["query_raw"] = original_topic
+                
+                if not resp["results"]: 
+                    msg = f"關於「{original_topic}」目前沒有相關的內容。" 
+                    if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
+                    resp["message"] = msg
 
     else:
         search_q = q_cleaned if q_cleaned else q_search
@@ -778,8 +783,13 @@ def chat(req: ChatRequest):
             if user_lang != "zh-TW": msg = translate_text(msg, user_lang)
             resp["message"] = msg
 
+    # [修正 2] 儲存 detected_lang 到歷史紀錄
     history_list = HISTORY.setdefault(session_id, [])
-    history_list.append({"query": q_origin, "response": resp})
+    history_list.append({
+        "query": q_origin, 
+        "response": resp, 
+        "detected_lang": user_lang
+    })
     if len(history_list) > 50: history_list.pop(0)
     
     return resp
