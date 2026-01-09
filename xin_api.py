@@ -468,6 +468,33 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
             "video_link": "🎥 Link: ",
             "more_btn": "👉 Click 'Next 5' for more"
         }
+    elif target_lang == 'vi':
+        ui = {
+            "not_found": "Hiện không tìm thấy nội dung phù hợp. Bạn có thể thử các từ khóa như: căng thẳng, mất ngủ, trầm cảm...",
+            "found_msg": "📚 Tìm thấy {total} kết quả (🎥 Video {v_count}, 📄 Bài viết {a_count})\nĐang hiển thị mục {start}～{end}\n\nDựa trên mô tả của bạn, tôi đã tìm thấy các khóa học / bài viết này:",
+            "hint_prefix": "💡 Gợi ý:",
+            "hint_default": "Không tìm thấy từ khóa cụ thể trong phụ đề, bạn có thể xem từ đầu.",
+            "video_link": "🎥 Link video:",
+            "more_btn": "👉 Nhấn \"5 mục tiếp theo\" để xem thêm"
+        }
+    elif target_lang == 'ms':
+        ui = {
+            "not_found": "Tiada kursus berkaitan ditemui buat masa ini. Cuba kata kunci seperti: stres, insomnia, kemurungan...",
+            "found_msg": "📚 Menjumpai {total} keputusan (🎥 Video {v_count}, 📄 Artikel {a_count})\nMenunjukkan item {start}～{end}\n\nBerdasarkan huraian anda, saya menemui kursus / artikel ini:",
+            "hint_prefix": "💡 Tips:",
+            "hint_default": "Tiada kata kunci khusus ditemui dalam sari kata, anda boleh tonton dari awal.",
+            "video_link": "🎥 Pautan video:",
+            "more_btn": "👉 Klik \"5 Seterusnya\" untuk lihat lagi"
+        }
+    elif target_lang == 'zh-CN':
+        ui = {
+            "not_found": "目前找不到很符合的课程，可以试着用：婆媳、压力、忧郁、失眠… 等词再试试看。",
+            "found_msg": "📚 共找到 {total} 笔内容（🎥 视频 {v_count}、📄 文章 {a_count}）\n目前显示第 {start}～{end} 笔\n\n根据你的描述，我帮你找了这些课程 / 文章：",
+            "hint_prefix": "💡 小提醒：",
+            "hint_default": "字幕里没有特别命中关键句，可以从头开始看。",
+            "video_link": "🎥 视频链接：",
+            "more_btn": "👉 点击 “给我后五个” 查看更多"
+        }
     else:
         # 預設中文
         ui = {
