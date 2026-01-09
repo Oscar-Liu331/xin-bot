@@ -84,8 +84,8 @@ def detect_language(text: str) -> str:
 def translate_text(text: str, target: str) -> str:
     """
     翻譯函式 (整合智慧重試機制)：
-    1. 嘗試直接翻譯。
-    2. 如果失敗 (結果與原文相同)，移除特殊符號後重試。
+    1. 若是日文目標，先嘗試移除符號再翻 (提高準確度)。
+    2. 整合快取。
     """
     if not text: return ""
     # 如果目標是中文，且原文就是中文 (簡單判斷)，直接回傳
@@ -100,18 +100,25 @@ def translate_text(text: str, target: str) -> str:
     try:
         translator = GoogleTranslator(source='auto', target=target)
         
-        # --- 第一試：直接翻譯 ---
-        result = translator.translate(text)
-        
-        # --- 驗證與重試機制 ---
-        # 如果翻譯結果跟原文一模一樣，且原文長度足夠，代表可能因為特殊符號導致 API 拒絕翻譯
-        if result == text and len(text) > 5:
-            # 移除常見干擾符號：【】《》「」()
+        # [優化] 針對日文翻譯，為了避免 API 把 "【影片】" 當作不需翻譯的符號，
+        # 我們優先送出乾淨的文字，這樣 "女性與睡眠障礙" 的 "與" 比較容易被翻成 "と"
+        text_to_translate = text
+        if target == 'ja':
+             # 移除常見干擾符號
             clean_text = re.sub(r"[【】《》「」()（）]", " ", text)
-            clean_text = re.sub(r"\s+", " ", clean_text).strip() # 移除多餘空白
-            
-            # 如果清乾淨後的文字跟原本不一樣，代表有符號被移除了，值得重試
-            if clean_text != text:
+            clean_text = re.sub(r"\s+", " ", clean_text).strip()
+            if clean_text:
+                text_to_translate = clean_text
+
+        # 執行翻譯
+        result = translator.translate(text_to_translate)
+        
+        # 防呆：如果翻譯失敗 (結果跟原文完全一樣，且長度足夠)
+        # 且我們還沒試過移除符號 (即非日文模式)，則嘗試移除符號重試
+        if result == text_to_translate and len(text) > 5 and target != 'ja':
+             clean_text = re.sub(r"[【】《》「」()（）]", " ", text)
+             clean_text = re.sub(r"\s+", " ", clean_text).strip()
+             if clean_text != text:
                 retry_result = translator.translate(clean_text)
                 if retry_result != clean_text:
                     result = retry_result
@@ -551,6 +558,7 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
             f"{ui['intro']}"
         )
     else:
+        # 中文
         header_msg = (
             f"📚 {ui['found_pattern'].format(total=total, v_count=video_count, a_count=article_count)}\n"
             f"{ui['showing']} {offset + 1}～{min(offset + limit, total)} 筆\n\n"
