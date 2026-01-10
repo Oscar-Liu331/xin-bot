@@ -268,7 +268,7 @@
       return `${hh}:${mm}`;
     }
 
-    function appendMessage(role, text, asHtml = false) {
+    function appendMessage(role, text, asHtml = false, latency = null) {
       const row = document.createElement('div');
       row.classList.add('message-row', role);
 
