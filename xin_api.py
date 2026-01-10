@@ -31,7 +31,6 @@ TOP_K = 5
 XIN_POINTS_FILE = Path("xin_points.json")
 UNITS_FILE = Path("wellbeing_elearn_pro_all_with_articles.json")
 
-VECTORS_FILE = Path("vectors.json")
 CORPUS_VECTORS = None 
 
 JINA_API_URL = "https://api.jina.ai/v1/embeddings"
@@ -44,6 +43,30 @@ STOP_WORDS = []
 
 # 翻譯用快取
 TRANSLATION_CACHE = {}
+
+MODEL_CONFIGS = {
+    "v4": {
+        "api_model_name": "jina-embeddings-v4", # 最新發布的版本
+        "vector_filename": "vectors_v4.json",
+        "dimensions": 2048 # ⚠️ 注意：v4 預設維度是 2048
+    },
+    "v3": {
+        "api_model_name": "jina-embeddings-v3",
+        "vector_filename": "vectors_v3.json",
+        "dimensions": 1024
+    },
+    "v2-zh": {
+        "api_model_name": "jina-embeddings-v2-base-zh",
+        "vector_filename": "vectors_v2_zh.json",
+        "dimensions": 768
+    }
+}
+
+CURRENT_MODEL_KEY = "v3"
+
+CURRENT_CONFIG = MODEL_CONFIGS[CURRENT_MODEL_KEY]
+
+VECTORS_FILE = Path(CURRENT_CONFIG["vector_filename"])
 
 # --- 核心工具函式 ---
 
@@ -125,51 +148,106 @@ def load_keywords_from_json():
 
 load_keywords_from_json()
 
+# 請確保全域變數宣告包含 VECTOR_CACHE
+# VECTOR_CACHE = {} 
+
 def init_vector_model():
-    global CORPUS_VECTORS, JINA_API_KEY
-    JINA_API_KEY = JINA_API_KEY = os.environ.get("JINA_API_KEY")
+    global VECTOR_CACHE, JINA_API_KEY
+    
+    # 你的 API KEY (建議之後還是換成環境變數比較安全)
+    JINA_API_KEY = os.environ.get("JINA_API_KEY")
+
     if not JINA_API_KEY:
         print("[init] ⚠️ 警告：找不到 JINA_API_KEY，語意搜尋將無法運作！")
     else:
         print("[init] ✅ Jina API Key 已設定")
 
-    if VECTORS_FILE.exists():
-        print(f"[init] 正在讀取向量快取: {VECTORS_FILE} ...")
-        try:
-            with open(VECTORS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                CORPUS_VECTORS = np.array(data, dtype="float32") 
-            print(f"[init] ✅ 成功載入 {len(CORPUS_VECTORS)} 筆向量資料")
-        except Exception as e:
-            print(f"[init] ❌ 讀取向量檔失敗: {e}")
-    else:
-        print("[init] ⚠️ 找不到 vectors.json")
+    print("[init] 🚀 正在初始化多模型系統...")
+    
+    # 初始化快取字典
+    VECTOR_CACHE = {} 
 
-def get_jina_embedding(text):
+    # 迴圈讀取 MODEL_CONFIGS 裡面的每一組設定
+    for key, config in MODEL_CONFIGS.items():
+        fname = Path(config["vector_filename"])
+        expected_dim = config["dimensions"]
+        
+        if fname.exists():
+            try:
+                print(f"   Using > 正在載入 [{key}] 向量檔: {fname} ...")
+                
+                with open(fname, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    matrix = np.array(data, dtype="float32")
+                
+                # 防呆檢查：檢查維度是否正確
+                current_dim = matrix.shape[1] if len(matrix) > 0 else 0
+                if current_dim != expected_dim:
+                    print(f"   ⚠️ 警告：[{key}] 檔案維度 ({current_dim}) 與設定 ({expected_dim}) 不符！可能需要重新生成。")
+                
+                # 存入快取
+                VECTOR_CACHE[key] = matrix
+                print(f"   ✅ [{key}] 載入成功 (共 {len(matrix)} 筆, 維度 {current_dim})")
+                
+            except Exception as e:
+                print(f"   ❌ [{key}] 讀取失敗: {e}")
+        else:
+            print(f"   ⚠️ [{key}] 找不到檔案 {fname}，跳過此版本。")
+            
+    print(f"[init] 完成！共載入 {len(VECTOR_CACHE)} 個模型版本。\n")
+
+def get_jina_embedding(text, model_name):
     if not JINA_API_KEY:
         raise Exception("JINA_API_KEY not set")
+    
     headers = { "Content-Type": "application/json", "Authorization": f"Bearer {JINA_API_KEY}" }
-    data = { "model": "jina-embeddings-v3", "input": [text] }
+    
+    payload = { 
+        "model": model_name, 
+        "input": [text] 
+    }
+    
+    # v3 和 v4 建議加上 task 參數
+    if "v3" in model_name or "v4" in model_name:
+        payload["task"] = "retrieval.passage"
+
     try:
-        resp = requests.post(JINA_API_URL, headers=headers, json=data, timeout=10)
+        resp = requests.post(JINA_API_URL, headers=headers, json=payload, timeout=10)
         resp.raise_for_status()
         return resp.json()["data"][0]["embedding"]
     except Exception as e:
         print(f"[Jina API Error] {e}")
         return None
 
-def search_units_semantic(query: str, top_k: int = 5):
-    global CORPUS_VECTORS
-    if not JINA_API_KEY or CORPUS_VECTORS is None: return []
+def search_units_semantic(query: str, model_key: str, top_k: int = 5):
+    # 1. 從全域快取中取得對應版本的向量矩陣
+    # 請確保你有宣告 global VECTOR_CACHE
+    corpus = VECTOR_CACHE.get(model_key)
+    
+    if corpus is None:
+        print(f"[search] 錯誤：找不到版本 {model_key} 的向量資料")
+        return []
+    
+    config = MODEL_CONFIGS.get(model_key)
+    if not config: return []
+
     try:
-        query_vec_list = get_jina_embedding(query)
+        # 2. 呼叫指定版本的 API 取得 Query Vector
+        # 注意：這裡會呼叫 get_jina_embedding，傳入對應的模型名稱 (例如 jina-embeddings-v3)
+        query_vec_list = get_jina_embedding(query, config["api_model_name"])
+        
         if not query_vec_list: return []
+        
         query_vec = np.array(query_vec_list, dtype="float32")
-        scores = np.dot(CORPUS_VECTORS, query_vec)
+        
+        # 3. 計算相似度 (矩陣運算)
+        scores = np.dot(corpus, query_vec)
         top_indices = np.argsort(scores)[-top_k:][::-1]
+        
         results = []
         for idx in top_indices:
             score = float(scores[idx])
+            # 門檻值可以自己微調
             if score > 0.25: 
                 r = dict(UNITS_CACHE[idx])
                 r["_score"] = score
@@ -179,7 +257,7 @@ def search_units_semantic(query: str, top_k: int = 5):
     except Exception as e:
         print(f"[search] 向量搜尋發生錯誤: {e}")
         return []
-
+    
 def detect_pagination_intent(q: str) -> bool:
     q = q.lower().strip()
     keywords = [
@@ -650,23 +728,44 @@ def build_recommendations_response(query: str, results: List[Dict[str, Any]],
         "message": (ui["more_btn"] if (offset + limit < total) else "") + debug_lang
     }
 
-def execute_hybrid_search(search_query: str) -> List[Dict[str, Any]]:
-    print(f"[hybrid] 開始搜尋: {search_query}")
-    kw_results = search_units(UNITS_CACHE, search_query, top_k=9999)
-    vec_results = search_units_semantic(search_query, top_k=50)
+def execute_hybrid_search(search_query: str, model_key: str = "v3") -> List[Dict[str, Any]]:
+    # 防呆：如果傳進來的 key 不在快取裡 (例如前端亂傳)，就預設回 v3
+    if model_key not in VECTOR_CACHE:
+        print(f"[hybrid] ⚠️ 請求的模型 {model_key} 不存在，切換回 v3")
+        model_key = "v3"
+        # 如果連 v3 都沒有，就隨便抓一個，避免報錯
+        if "v3" not in VECTOR_CACHE and VECTOR_CACHE:
+             model_key = list(VECTOR_CACHE.keys())[0]
+
+    print(f"[hybrid] 開始搜尋: {search_query} | 使用模型: {model_key}")
     
+    # 1. 關鍵字搜尋 (這部分不受模型版本影響)
+    kw_results = search_units(UNITS_CACHE, search_query, top_k=9999)
+    
+    # 2. 語意搜尋 (★關鍵修改：傳入 model_key)
+    vec_results = search_units_semantic(search_query, model_key, top_k=50)
+    
+    # 3. 混合搜尋加權邏輯 (RRF 或 加權相加)
     combined_map = {}
+    
+    # 先放入關鍵字結果
     for r in kw_results:
         key = get_base_key(r.get("section_title"), r.get("title"))
         combined_map[key] = r
 
+    # 再疊加向量結果
     for r in vec_results:
         key = get_base_key(r.get("section_title"), r.get("title"))
+        
+        # 權重設定
         VECTOR_WEIGHT_BOOST = 20.0 
         VECTOR_WEIGHT_BASE = 10.0
+        
         if key in combined_map:
+            # 如果兩邊都找到，大幅加分
             combined_map[key]["_score"] += (r["_score"] * VECTOR_WEIGHT_BOOST)
         else:
+            # 如果只有向量找到，給予基礎分
             if r["_score"] > 0.25: 
                 r["_score"] = r["_score"] * VECTOR_WEIGHT_BASE
                 combined_map[key] = r
@@ -694,6 +793,7 @@ HISTORY: Dict[str, List[Dict[str, Any]] ] = {}
 class ChatRequest(BaseModel):
     query: str
     session_id: Optional[str] = None
+    model: Optional[str] = "v3"  # 新增這個欄位，預設 v3
 
 class NearbyRequest(BaseModel):
     address: str
@@ -708,12 +808,15 @@ def ping(): return {"status": "ok"}
 def chat(req: ChatRequest):
     start_time = time.time()
 
+    # 1. 基礎參數初始化
     q_origin = req.query.strip()
     session_id = req.session_id or "anonymous"
+    target_model = req.model or "v3"  # 取得前端傳來的模型選擇
     
     history_list = HISTORY.get(session_id, [])
     is_pagination = detect_pagination_intent(q_origin)
     
+    # 2. 語言偵測與歷史偏好
     # A. 偵測當前輸入
     current_detected = detect_language(q_origin)
     
@@ -726,9 +829,8 @@ def chat(req: ChatRequest):
                 historical_lang = lang
                 break
     
-    # C. 決策邏輯 (修正版：只有分頁指令才繼承，一般中文輸入則切回中文)
+    # C. 決策邏輯
     final_lang = "zh-TW"
-    
     if current_detected != "zh-TW":
         final_lang = current_detected
     elif is_pagination and historical_lang != "zh-TW":
@@ -738,7 +840,7 @@ def chat(req: ChatRequest):
 
     print(f">>> [/chat] Origin: {q_origin} | Detected: {current_detected} | History: {historical_lang} -> Final: {final_lang}")
 
-    # 4. 翻譯查詢
+    # 3. 翻譯與前處理
     if final_lang != "zh-TW":
         q_search = translate_text(q_origin, "zh-TW")
     else:
@@ -763,6 +865,9 @@ def chat(req: ChatRequest):
 
     resp = {}
 
+    # 4. 意圖路由 (Routing)
+    
+    # Case A: 地址查詢
     if ("附近" in q_search) and ("心據點" in q_search or "看診" in q_search or "門診" in q_search):
         addr = extract_address_from_query(q_search)
         if not addr: 
@@ -791,6 +896,7 @@ def chat(req: ChatRequest):
             results = find_nearby_points(lat, lon, max_km=5, top_k=TOP_K)
             resp = build_nearby_points_response(q_search, results)
 
+    # Case B: 分頁指令 (下一頁)
     elif detect_pagination_intent(q_search):
         if not history_list:
             msg = "目前沒有上一筆推薦結果，可以先問一個問題 😊"
@@ -809,7 +915,9 @@ def chat(req: ChatRequest):
                 prev_filter = prev_resp.get("filter_type", None)
                 new_offset = prev_resp["offset"] + prev_resp["limit"]
                 
-                full_results = execute_hybrid_search(prev_query)
+                # 這裡也要加上 model_key
+                full_results = execute_hybrid_search(prev_query, model_key=target_model)
+                
                 if prev_filter == "article": full_results = [r for r in full_results if r.get("is_article")]
                 elif prev_filter == "video": full_results = [r for r in full_results if not r.get("is_article")]
                 
@@ -820,6 +928,7 @@ def chat(req: ChatRequest):
                 resp["filter_type"] = prev_filter
                 resp["query_raw"] = prev_query
 
+    # Case C: 只有媒體偏好修正 (例如用戶只說 "只想看影片")
     elif media_pref_check and not q_cleaned:
         if not history_list:
             msg = "請先輸入一個主題，例如「焦慮」或「失眠」。"
@@ -835,7 +944,9 @@ def chat(req: ChatRequest):
                 prev_resp = last["response"]
                 original_topic = prev_resp.get("query_raw") or prev_resp.get("query")
                 
-                full_results = execute_hybrid_search(original_topic)
+                # 這裡也要加上 model_key
+                full_results = execute_hybrid_search(original_topic, model_key=target_model)
+                
                 if media_pref_check == "article": full_results = [r for r in full_results if r.get("is_article")]
                 elif media_pref_check == "video": full_results = [r for r in full_results if not r.get("is_article")]
                 
@@ -851,9 +962,13 @@ def chat(req: ChatRequest):
                     if final_lang != "zh-TW": msg = translate_text(msg, final_lang)
                     resp["message"] = msg
 
+    # Case D: 一般搜尋 (這是你原本報錯的地方，現在修好了)
     else:
+        # 1. 確保 search_q 有值
         search_q = q_cleaned if q_cleaned else q_search
-        full_results = execute_hybrid_search(search_q)
+        
+        # 2. 執行搜尋 (傳入 model_key)
+        full_results = execute_hybrid_search(search_q, model_key=target_model)
         
         final_filter = None
         if media_pref_check == "article":
@@ -882,22 +997,26 @@ def chat(req: ChatRequest):
             if final_lang != "zh-TW": msg = translate_text(msg, final_lang)
             resp["message"] = msg
 
-    # 儲存 final_lang 到歷史紀錄
-    history_list = HISTORY.setdefault(session_id, [])
+    # 5. 後處理 (儲存歷史、計算時間)
+    
+    # 回傳使用的模型資訊 (方便前端顯示)
+    resp["used_model"] = target_model
+
     end_time = time.time()
     execution_time = end_time - start_time
-    # 格式化成 "0.45 秒" 這種字串，或是直接給數字也可以
     resp["process_time"] = f"{execution_time:.4f}s"
 
-    print(f"DEBUG: 計算耗時: {resp['process_time']} | 回傳資料 keys: {list(resp.keys())}")
-    
+    print(f"DEBUG: 計算耗時: {resp['process_time']} | Model: {target_model} | Keys: {list(resp.keys())}")
+
+    # 儲存到歷史紀錄
+    history_list = HISTORY.setdefault(session_id, [])
     history_list.append({
         "query": q_origin, 
         "response": resp, 
         "detected_lang": final_lang
     })
     if len(history_list) > 50: history_list.pop(0)
-    
+
     return resp
 
 @app.get("/history")

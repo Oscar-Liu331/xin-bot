@@ -210,14 +210,47 @@
         max-width: 100%;
       }
     }
+    /* 右上角模型選擇器樣式 */
+    .model-selector-wrap {
+      margin-left: auto; /* 推到最右邊 */
+    }
+
+    .model-select {
+      background: rgba(255, 255, 255, 0.2);
+      color: white;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      padding: 4px 8px;
+      border-radius: 6px;
+      font-size: 13px;
+      outline: none;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .model-select:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+
+    .model-select option {
+      background: white;
+      color: #333;
+    }
   </style>
 </head>
 <body>
   <div class="chat-wrapper">
+    
     <div class="chat-header">
       <div>
         <div class="chat-header-title">心快活 課程推薦 & 心據點查詢</div>
         <div class="chat-header-status">🟢 已連線 API /chat</div>
+      </div>
+      <div class="model-selector-wrap">
+        <select id="modelSelect" class="model-select">
+          <option value="v3" selected>Jina v3 (推薦)</option>
+          <option value="v4">Jina v4 (最新)</option>
+          <option value="v2-zh">Jina v2 (舊版)</option>
+        </select>
       </div>
     </div>
 
@@ -239,6 +272,7 @@
         送出
       </button>
     </div>
+
   </div>
 
   <script>
@@ -453,6 +487,9 @@
     }
 
     async function callChatApi(query) {
+      // 1. 抓取目前選單的值
+      const selectedModel = document.getElementById('modelSelect').value;
+      
       const res = await fetch(`${API_BASE}/chat`, {
         method: 'POST',
         headers: {
@@ -460,7 +497,8 @@
         },
         body: JSON.stringify({
           query,
-          session_id: SESSION_ID, 
+          session_id: SESSION_ID,
+          model: selectedModel // 2. 傳送給後端
         }),
       });
 
@@ -498,6 +536,8 @@
 
     async function sendMessage() {
       const text = chatInputEl.value.trim();
+      const resp = await callChatApi(text);
+      const botHtml = formatApiResponse(resp);
       if (!text) return;
 
       appendMessage('user', text);
@@ -511,9 +551,10 @@
         const resp = await callChatApi(text);
         const botHtml  = formatApiResponse(resp);
 
-        const latency = resp.process_time || null;
+        const usedModel = resp.used_model || document.getElementById('modelSelect').value;
+        const latency = resp.process_time ? `${resp.process_time} (${usedModel})` : null;
 
-        appendMessage('bot', botHtml, true,latency);
+        appendMessage('bot', botHtml, true, latency);
       } catch (err) {
         console.error(err);
         appendMessage('bot', '呼叫後端 API 失敗，請稍後再試。');
