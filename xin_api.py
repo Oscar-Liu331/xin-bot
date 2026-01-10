@@ -127,7 +127,7 @@ load_keywords_from_json()
 
 def init_vector_model():
     global CORPUS_VECTORS, JINA_API_KEY
-    JINA_API_KEY = os.environ.get("JINA_API_KEY")
+    JINA_API_KEY = JINA_API_KEY = os.environ.get("JINA_API_KEY")
     if not JINA_API_KEY:
         print("[init] ⚠️ 警告：找不到 JINA_API_KEY，語意搜尋將無法運作！")
     else:
@@ -888,6 +888,9 @@ def chat(req: ChatRequest):
     execution_time = end_time - start_time
     # 格式化成 "0.45 秒" 這種字串，或是直接給數字也可以
     resp["process_time"] = f"{execution_time:.4f}s"
+
+    print(f"DEBUG: 計算耗時: {resp['process_time']} | 回傳資料 keys: {list(resp.keys())}")
+    
     history_list.append({
         "query": q_origin, 
         "response": resp, 

@@ -288,11 +288,19 @@
 
       const meta = document.createElement('div');
       meta.classList.add('message-meta');
+      
+      // 1. 先取得目前時間
       let metaText = getTimeString();
+      
+      // 2. 如果有 latency，就接在後面
       if (latency && role === 'bot') {
         metaText += ` · 耗時 ${latency}`;
       }
-      meta.textContent = getTimeString();
+      
+      // 3. ★★★ 修正這裡 ★★★
+      // 原本你寫 meta.textContent = getTimeString(); 導致上面做的工都白費了
+      // 應該要指派變數 metaText 給它
+      meta.textContent = metaText; 
 
       bubbleWrap.appendChild(bubble);
       bubbleWrap.appendChild(meta);
