@@ -288,6 +288,10 @@
 
       const meta = document.createElement('div');
       meta.classList.add('message-meta');
+      let metaText = getTimeString();
+      if (latency && role === 'bot') {
+        metaText += ` · 耗時 ${latency}`;
+      }
       meta.textContent = getTimeString();
 
       bubbleWrap.appendChild(bubble);
@@ -475,7 +479,8 @@
           }
           if (item.response) {
             const botHtml = formatApiResponse(item.response);
-            appendMessage('bot', botHtml, true); 
+            const latency = item.response.process_time || null;
+            appendMessage('bot', botHtml, true,latency); 
           }
         }
       } catch (err) {
@@ -497,7 +502,10 @@
       try {
         const resp = await callChatApi(text);
         const botHtml  = formatApiResponse(resp);
-        appendMessage('bot', botHtml, true);
+
+        const latency = resp.process_time || null;
+
+        appendMessage('bot', botHtml, true,latency);
       } catch (err) {
         console.error(err);
         appendMessage('bot', '呼叫後端 API 失敗，請稍後再試。');

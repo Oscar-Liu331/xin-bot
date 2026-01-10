@@ -1,3 +1,4 @@
+import time
 import json
 import re
 import os
@@ -705,6 +706,8 @@ def ping(): return {"status": "ok"}
 
 @app.post("/chat")
 def chat(req: ChatRequest):
+    start_time = time.time()
+
     q_origin = req.query.strip()
     session_id = req.session_id or "anonymous"
     
@@ -881,6 +884,10 @@ def chat(req: ChatRequest):
 
     # 儲存 final_lang 到歷史紀錄
     history_list = HISTORY.setdefault(session_id, [])
+    end_time = time.time()
+    execution_time = end_time - start_time
+    # 格式化成 "0.45 秒" 這種字串，或是直接給數字也可以
+    resp["process_time"] = f"{execution_time:.4f}s"
     history_list.append({
         "query": q_origin, 
         "response": resp, 
@@ -896,15 +903,28 @@ def get_history(session_id: str):
 
 @app.post("/nearby")
 def nearby(req: NearbyRequest):
+    start_time = time.time()
     addr = req.address.strip()
-    if not addr: return {"type": "xin_points", "address": None, "points": [], "message": "請提供完整地址"}
-    geo = geocode_address(addr)
-    if not geo: return {"type": "xin_points", "address": addr, "points": [], "message": f"查不到「{addr}」這個地址"}
-    results = find_nearby_points(geo[0], geo[1], max_km=5, top_k=TOP_K)
-    return build_nearby_points_response(addr, results)
+    resp = {}
+    if not addr: 
+        return {"type": "xin_points", "address": None, "points": [], "message": "請提供完整地址"}
+    else:
+        geo = geocode_address(addr)
+        if not geo: 
+            resp = {"type": "xin_points", "address": addr, "points": [], "message": f"查不到「{addr}」這個地址"}
+        else:
+            results = find_nearby_points(geo[0], geo[1], max_km=5, top_k=TOP_K)
+            resp = build_nearby_points_response(addr, results)
+    
+    end_time = time.time()
+    resp["process_time"] = f"{end_time - start_time:.3f}s"
+
+    return resp
 
 @app.post("/recommend")
 def recommend(req: RecommendRequest):
+    start_time = time.time()
+
     q = req.query.strip()
     sid = "anonymous" 
     pref = None
@@ -917,6 +937,10 @@ def recommend(req: RecommendRequest):
     elif pref == "video": full_results = [r for r in full_results if not r.get("is_article")]
 
     resp = build_recommendations_response(q, full_results, offset=0, limit=TOP_K)
+    
+    end_time = time.time()
+    resp["process_time"] = f"{end_time - start_time:.3f}s"
+
     history_list = HISTORY.setdefault(sid, [])
     history_list.append({"query": q, "response": resp})
     return resp
