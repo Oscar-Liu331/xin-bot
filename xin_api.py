@@ -46,9 +46,9 @@ TRANSLATION_CACHE = {}
 
 MODEL_CONFIGS = {
     "v4": {
-        "api_model_name": "jina-embeddings-v4", # 最新發布的版本
+        "api_model_name": "jina-embeddings-v4",
         "vector_filename": "vectors_v4.json",
-        "dimensions": 2048 # ⚠️ 注意：v4 預設維度是 2048
+        "dimensions": 2048 
     },
     "v3": {
         "api_model_name": "jina-embeddings-v3",
@@ -72,31 +72,36 @@ VECTORS_FILE = Path(CURRENT_CONFIG["vector_filename"])
 
 def detect_language(text: str) -> str:
     """
-    語言偵測最終版
+    語言偵測強化版：優先判定中日韓，避免誤判為越南文
     """
     if not text: return "zh-TW"
     
-    # 1. [絕對優先] 檢查常見日文特徵字
-    if re.search(r'[のはですがますくださいてにを気]', text):
-        return "ja"
+    # 1. [絕對優先] 檢查常見日文特徵字 (平假名/片假名)
     if re.search(r'[\u3040-\u309f\u30a0-\u30ff]', text):
         return "ja"
 
-    # 2. 檢查韓文
+    # 2. [絕對優先] 檢查韓文
     if re.search(r'[\uac00-\ud7af]', text):
         return "ko"
 
-    # 3. 檢查純英文
+    # 3. [絕對優先] 檢查中文 (只要包含漢字，且前面沒被判成日文，就視為中文)
+    # 這行能解決「給我後五個」被誤判或忽略的問題
+    if re.search(r'[\u4e00-\u9fa5]', text):
+        return "zh-TW"
+
+    # 4. 檢查純英文 (基本不變)
     clean_text = re.sub(r'[0-9\s,.?!:;\'"()\[\]]', '', text)
     if clean_text and all(ord(c) < 128 for c in clean_text):
         return "en"
 
-    # 4. 檢查中文
-    if re.search(r'[\u4e00-\u9fa5]', text):
-        return "zh-TW"
-
+    # 5. 最後才用 langdetect 猜測其他語言 (如越南文、法文等)
     try:
         lang = detect(text)
+        # 修正：langdetect 有時會把短中文誤判成 vi (越南文) 或其他
+        # 這裡做一個保險：如果偵測出非 zh/en/ja/ko，但看起來又像中文的狀況
+        if lang == 'vi' and len(text) < 10:
+             return "zh-TW" # 短句誤判越南文機率高，回歸中文
+        
         if lang.startswith("zh"): return "zh-TW"
         if lang == 'ja': return 'ja'
         return lang
@@ -156,6 +161,7 @@ def init_vector_model():
     
     # 你的 API KEY (建議之後還是換成環境變數比較安全)
     JINA_API_KEY = os.environ.get("JINA_API_KEY")
+    #JINA_API_KEY = "jina_092cc4becf864693bf8654d9597f81e0ASZ1dgEz5KVKQ1NwkDQMsWCeFLU7"
 
     if not JINA_API_KEY:
         print("[init] ⚠️ 警告：找不到 JINA_API_KEY，語意搜尋將無法運作！")
@@ -478,6 +484,7 @@ def find_nearby_points(lat, lon, max_km=5, top_k=5):
     return results[:top_k]
 
 def build_nearby_points_response(address: str, results):
+    # 1. 如果沒有結果，直接回傳
     if not results:
         return {
             "type": "xin_points",
@@ -487,16 +494,32 @@ def build_nearby_points_response(address: str, results):
         }
 
     points = []
-    origin_encoded = urllib.parse.quote(address)
+    
+    # 【防呆 1】處理來源地址 (origin)
+    # 確保不管傳入什麼，都轉成字串，避免 None 報錯
+    safe_origin = str(address) if address else ""
+    origin_encoded = urllib.parse.quote(safe_origin)
 
     for p, d in results:
-        dest_address = p.get("address", "")
+        # 【防呆 2】處理目標地址 (destination) -> 這是你報錯的地方
+        raw_addr = p.get("address")
+        
+        # 如果資料庫裡是 None，就轉成空字串；如果是數字，就轉成字串
+        if raw_addr is None:
+            dest_address = ""
+        else:
+            dest_address = str(raw_addr)
+        
+        # 進行 URL 編碼
         dest_encoded = urllib.parse.quote(dest_address)
-        map_url = f"https://www.google.com/maps/dir/?api=1&origin={origin_encoded}&destination={dest_encoded}&hl=zh-TW"
+        
+        # 3. 組合地圖連結
+        map_url = f"https://www.google.com/maps/dir/?api=1&origin=?q=source:{origin_encoded}&destination={dest_encoded}&hl=zh-TW"
+        
         points.append({
-            "title": p.get("title"),
+            "title": p.get("title") or "(未命名據點)", 
             "address": dest_address,
-            "tel": p.get("tel"),
+            "tel": p.get("tel") or "",
             "distance_km": round(d, 2),
             "map_url": map_url
         })
@@ -811,7 +834,7 @@ def chat(req: ChatRequest):
     # 1. 基礎參數初始化
     q_origin = req.query.strip()
     session_id = req.session_id or "anonymous"
-    target_model = req.model or "v3"  # 取得前端傳來的模型選擇
+    target_model = req.model or "v3"
     
     history_list = HISTORY.get(session_id, [])
     is_pagination = detect_pagination_intent(q_origin)
@@ -829,11 +852,21 @@ def chat(req: ChatRequest):
                 historical_lang = lang
                 break
     
-    # C. 決策邏輯
+    # ★★★ C. 決策邏輯 (修正重點) ★★★
     final_lang = "zh-TW"
-    if current_detected != "zh-TW":
+    
+    # 判斷當前輸入是否明確包含中文字
+    has_chinese_chars = bool(re.search(r'[\u4e00-\u9fa5]', q_origin))
+
+    if has_chinese_chars:
+        # 規則 1: 只要當下輸入有中文字，無論歷史是什麼，都強制用中文
+        final_lang = "zh-TW"
+    elif current_detected != "zh-TW":
+        # 規則 2: 偵測到明確的外語 (如英文 Next 5, 日文 次の5件)
         final_lang = current_detected
     elif is_pagination and historical_lang != "zh-TW":
+        # 規則 3: 只有在「輸入不含中文」且「是分頁指令」時，才繼承歷史外語
+        # 例如：上一句是用英文問，這句只打 "Next" 或 "More" (沒中文特徵)，才用英文回
         final_lang = historical_lang
     else:
         final_lang = "zh-TW"
@@ -915,7 +948,6 @@ def chat(req: ChatRequest):
                 prev_filter = prev_resp.get("filter_type", None)
                 new_offset = prev_resp["offset"] + prev_resp["limit"]
                 
-                # 這裡也要加上 model_key
                 full_results = execute_hybrid_search(prev_query, model_key=target_model)
                 
                 if prev_filter == "article": full_results = [r for r in full_results if r.get("is_article")]
@@ -928,7 +960,7 @@ def chat(req: ChatRequest):
                 resp["filter_type"] = prev_filter
                 resp["query_raw"] = prev_query
 
-    # Case C: 只有媒體偏好修正 (例如用戶只說 "只想看影片")
+    # Case C: 只有媒體偏好修正
     elif media_pref_check and not q_cleaned:
         if not history_list:
             msg = "請先輸入一個主題，例如「焦慮」或「失眠」。"
@@ -944,7 +976,6 @@ def chat(req: ChatRequest):
                 prev_resp = last["response"]
                 original_topic = prev_resp.get("query_raw") or prev_resp.get("query")
                 
-                # 這裡也要加上 model_key
                 full_results = execute_hybrid_search(original_topic, model_key=target_model)
                 
                 if media_pref_check == "article": full_results = [r for r in full_results if r.get("is_article")]
@@ -962,12 +993,10 @@ def chat(req: ChatRequest):
                     if final_lang != "zh-TW": msg = translate_text(msg, final_lang)
                     resp["message"] = msg
 
-    # Case D: 一般搜尋 (這是你原本報錯的地方，現在修好了)
+    # Case D: 一般搜尋
     else:
-        # 1. 確保 search_q 有值
         search_q = q_cleaned if q_cleaned else q_search
         
-        # 2. 執行搜尋 (傳入 model_key)
         full_results = execute_hybrid_search(search_q, model_key=target_model)
         
         final_filter = None
@@ -997,18 +1026,14 @@ def chat(req: ChatRequest):
             if final_lang != "zh-TW": msg = translate_text(msg, final_lang)
             resp["message"] = msg
 
-    # 5. 後處理 (儲存歷史、計算時間)
-    
-    # 回傳使用的模型資訊 (方便前端顯示)
+    # 5. 後處理
     resp["used_model"] = target_model
-
     end_time = time.time()
     execution_time = end_time - start_time
     resp["process_time"] = f"{execution_time:.4f}s"
 
     print(f"DEBUG: 計算耗時: {resp['process_time']} | Model: {target_model} | Keys: {list(resp.keys())}")
 
-    # 儲存到歷史紀錄
     history_list = HISTORY.setdefault(session_id, [])
     history_list.append({
         "query": q_origin, 
